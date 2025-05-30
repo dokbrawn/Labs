@@ -1,0 +1,1 @@
+/usr/bin/cc CMakeFiles/test_factorial.dir/tests/test_factorial.c.o -o test_factorial  libfactorial_lib.a -lcmocka 

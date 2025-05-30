@@ -1,0 +1,2 @@
+/usr/bin/ar qc libfactorial_lib.a CMakeFiles/factorial_lib.dir/src/factorial.c.o
+/usr/bin/ranlib libfactorial_lib.a

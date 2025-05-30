@@ -1,0 +1,27 @@
+Start testing: May 28 08:43 +07
+----------------------------------------------------------
+1/1 Testing: FactorialTestCommand
+1/1 Test: FactorialTestCommand
+Command: "/mnt/c/Users/tanis/Documents/Labs/laba8/build/test_factorial"
+Directory: /mnt/c/Users/tanis/Documents/Labs/laba8/build
+"FactorialTestCommand" start time: May 28 08:43 +07
+Output:
+----------------------------------------------------------
+[==========] tests: Running 3 test(s).
+[ RUN      ] test_factorial_zero_input
+[       OK ] test_factorial_zero_input
+[ RUN      ] test_factorial_positive_input
+[       OK ] test_factorial_positive_input
+[ RUN      ] test_factorial_negative_input
+[       OK ] test_factorial_negative_input
+[==========] tests: 3 test(s) run.
+[  PASSED  ] 3 test(s).
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"FactorialTestCommand" end time: May 28 08:43 +07
+"FactorialTestCommand" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: May 28 08:43 +07
