@@ -4,186 +4,130 @@
 #include <ctime>
 using namespace std;
 
-// Класс Квадрат
+// Суперкласс Квадрат
 class Kvadrat {
 protected:
     double a; // длина стороны
 public:
     Kvadrat(double side = 0.0) : a(side) {}
-
-    double diagonal() const { return a * sqrt(2.0); } // диагональ
-    double perimeter() const { return 4.0 * a; }      // периметр
-    virtual double area() const { return a * a; }     // площадь
+    virtual double diagonal() const { return a * sqrt(2.0); }
+    virtual double perimeter() const { return 4.0 * a; }
+    virtual double area() const { return a * a; }
 
     virtual void printInfo() const {
         cout << "Квадрат: сторона=" << a
              << "  диагональ=" << diagonal()
              << "  периметр=" << perimeter()
-             << "  площадь=" << area() << "\n";
+             << "  площадь=" << area() << endl;
     }
-
-    double getSide() const { return a; }
 };
 
-// Класс Призма (наследует от Квадрат)
+// Подкласс Призма
 class Prizma : public Kvadrat {
-    double h; // высота призмы
+    double h; // высота
 public:
     Prizma(double side = 0.0, double height = 0.0) : Kvadrat(side), h(height) {}
-
-    double volume() const { return Kvadrat::area() * h; }                 // объём
-    double area() const override { return 2.0 * a * a + 4.0 * a * h; }     // площадь поверхности
+    // площадь поверхности (переопределяем)
+    double area() const override { return 2.0 * a * a + 4.0 * a * h; }
+    double volume() const { return Kvadrat::area() * h; }
 
     void printInfo() const override {
-        cout << "Призма: сторона основания=" << a
+        cout << "Призма: сторона=" << a
              << "  высота=" << h
              << "  диагональ основания=" << diagonal()
              << "  площадь поверхности=" << area()
-             << "  объём=" << volume() << "\n";
+             << "  объём=" << volume() << endl;
     }
-
-    double getHeight() const { return h; }
 };
 
-// Вспомогательная функция: безопасный ввод целого >= minVal
-int readInt(const char* prompt, int minVal) {
-    int x;
-    while (true) {
-        cout << prompt;
-        if (cin >> x && x >= minVal) {
-            return x;
-        }
-        cout << "  Некорректный ввод. Введите целое число >= " << minVal << ".\n";
-        cin.clear();
-        while (cin.get() != '\n') ; // сброс буфера
-    }
-}
-
-// Вспомогательная функция: безопасный ввод double >= minVal
-double readDouble(const char* prompt, double minVal) {
-    double x;
-    while (true) {
-        cout << prompt;
-        if (cin >> x && x >= minVal) {
-            return x;
-        }
-        cout << "  Некорректный ввод. Введите число >= " << minVal << ".\n";
-        cin.clear();
-        while (cin.get() != '\n') ;
-    }
-}
-
-// Случайное double в [minv, maxv]
-double randDouble(double minv, double maxv) {
-    double r = (double)rand() / (double)RAND_MAX; // [0,1]
-    return minv + r * (maxv - minv);
-}
-
 int main() {
-    srand((unsigned)time(nullptr));
+    srand((unsigned)time(NULL));
 
-    cout << "=== Лабораторная работа: квадраты и квадратные призмы ===\n\n";
+    cout << "Выберите режим: 1 - ввод вручную, 2 - случайные данные: ";
+    int mode;
+    cin >> mode;
 
-    int mode = readInt("Выберите режим: 1 - ввод вручную, 2 - случайные данные: ", 1);
-    while (mode != 1 && mode != 2) {
-        cout << "  Введите 1 или 2.\n";
-        mode = readInt("Выберите режим: 1 - ввод вручную, 2 - случайные данные: ", 1);
-    }
+    cout << "Введите количество квадратов N: ";
+    int N; cin >> N;
+    if (N < 0) N = 0;
+    cout << "Введите количество призм M: ";
+    int M; cin >> M;
+    if (M < 0) M = 0;
 
-    int N = readInt("Введите количество квадратов N (>=0): ", 0);
-    int M = readInt("Введите количество призм M (>=0): ", 0);
-
-    Kvadrat* squares = nullptr;
-    Prizma* prisms = nullptr;
-
+    Kvadrat* squares = NULL;
+    Prizma* prisms = NULL;
     if (N > 0) squares = new Kvadrat[N];
     if (M > 0) prisms = new Prizma[M];
 
     if (mode == 1) {
-        // Ввод вручную
-        cout << "\nВвод данных вручную:\n";
+        // ручной ввод
         for (int i = 0; i < N; ++i) {
-            double side = readDouble(("Сторона квадрата " + to_string(i+1) + ": ").c_str(), 0.0);
-            squares[i] = Kvadrat(side);
+            double s;
+            cout << "Сторона квадрата " << i+1 << ": ";
+            cin >> s;
+            squares[i] = Kvadrat(s);
         }
         for (int i = 0; i < M; ++i) {
-            double side = readDouble(("Сторона основания призмы " + to_string(i+1) + ": ").c_str(), 0.0);
-            double height = readDouble(("Высота призмы " + to_string(i+1) + ": ").c_str(), 0.0);
-            prisms[i] = Prizma(side, height);
+            double s, h;
+            cout << "Сторона основания призмы " << i+1 << ": ";
+            cin >> s;
+            cout << "Высота призмы " << i+1 << ": ";
+            cin >> h;
+            prisms[i] = Prizma(s, h);
         }
     } else {
-        // Случайные данные
-        cout << "\nГенерация случайных данных.\n";
-        double sideMin = readDouble("Минимальная сторона (>=0): ", 0.0);
-        double sideMax = readDouble("Максимальная сторона (> min): ", sideMin + 1e-12);
-        double heightMin = readDouble("Минимальная высота (>=0): ", 0.0);
-        double heightMax = readDouble("Максимальная высота (> min): ", heightMin + 1e-12);
-
-        cout << "\nГенерируем данные...\n";
+        // генерация простых случайных данных (1..10)
         for (int i = 0; i < N; ++i) {
-            double side = randDouble(sideMin, sideMax);
-            squares[i] = Kvadrat(side);
+            double s = (rand() % 100 + 1) / 10.0; // 0.1 .. 10.0
+            squares[i] = Kvadrat(s);
         }
         for (int i = 0; i < M; ++i) {
-            double side = randDouble(sideMin, sideMax);
-            double height = randDouble(heightMin, heightMax);
-            prisms[i] = Prizma(side, height);
+            double s = (rand() % 100 + 1) / 10.0;
+            double h = (rand() % 100 + 1) / 10.0;
+            prisms[i] = Prizma(s, h);
         }
     }
 
-    // Опционально вывести все объекты перед поиском
-    int showAll = readInt("\nПоказать все созданные объекты? 1-Да 0-Нет: ", 0);
-    while (showAll != 0 && showAll != 1) {
-        cout << "  Введите 1 или 0.\n";
-        showAll = readInt("Показать все созданные объекты? 1-Да 0-Нет: ", 0);
+    // Покажем все объекты (коротко)
+    cout << "\nВсе квадраты:\n";
+    if (N == 0) cout << "  нет\n";
+    for (int i = 0; i < N; ++i) {
+        cout << "[" << i+1 << "] "; squares[i].printInfo();
     }
 
-    if (showAll == 1) {
-        cout << "\nВсе квадраты:\n";
-        if (N == 0) cout << "  Квадратов нет.\n";
-        for (int i = 0; i < N; ++i) {
-            cout << "  [" << i+1 << "] ";
-            squares[i].printInfo();
-        }
-
-        cout << "\nВсе призмы:\n";
-        if (M == 0) cout << "  Призм нет.\n";
-        for (int i = 0; i < M; ++i) {
-            cout << "  [" << i+1 << "] ";
-            prisms[i].printInfo();
-        }
+    cout << "\nВсе призмы:\n";
+    if (M == 0) cout << "  нет\n";
+    for (int i = 0; i < M; ++i) {
+        cout << "[" << i+1 << "] "; prisms[i].printInfo();
     }
 
-    // Нахождение квадрата с максимальной площадью
-    if (N == 0) {
-        cout << "\nКвадратов нет для поиска максимальной площади.\n";
-    } else {
-        int idxMax = 0;
+    // Найти квадрат с максимальной площадью
+    if (N > 0) {
+        int idx = 0;
         for (int i = 1; i < N; ++i) {
-            if (squares[i].area() > squares[idxMax].area())
-                idxMax = i;
+            if (squares[i].area() > squares[idx].area()) idx = i;
         }
-        cout << "\nКвадрат с максимальной площадью (номер " << idxMax+1 << "):\n";
-        squares[idxMax].printInfo();
-    }
-
-    // Нахождение призмы с максимальной диагональю основания
-    if (M == 0) {
-        cout << "\nПризм нет для поиска максимальной диагонали основания.\n";
+        cout << "\nКвадрат с максимальной площадью (номер " << idx+1 << "):\n";
+        squares[idx].printInfo();
     } else {
-        int idxMaxP = 0;
-        for (int i = 1; i < M; ++i) {
-            if (prisms[i].diagonal() > prisms[idxMaxP].diagonal())
-                idxMaxP = i;
-        }
-        cout << "\nПризма с максимальной диагональю основания (номер " << idxMaxP+1 << "):\n";
-        prisms[idxMaxP].printInfo();
+        cout << "\nКвадратов нет для поиска.\n";
     }
 
-    // Очистка памяти
+    // Найти призму с максимальной диагональю основания
+    if (M > 0) {
+        int idx = 0;
+        for (int i = 1; i < M; ++i) {
+            if (prisms[i].diagonal() > prisms[idx].diagonal()) idx = i;
+        }
+        cout << "\nПризма с максимальной диагональю основания (номер " << idx+1 << "):\n";
+        prisms[idx].printInfo();
+    } else {
+        cout << "\nПризм нет для поиска.\n";
+    }
+
+    // очистка
     delete[] squares;
     delete[] prisms;
 
-    cout << "\nГотово.\n";
     return 0;
 }
