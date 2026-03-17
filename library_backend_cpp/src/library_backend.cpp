@@ -178,6 +178,40 @@ int extractYear(const std::string& publishDate) {
     }
     return 0;
 }
+
+
+template <typename Compare>
+int partitionBooks(std::vector<Book>& books, int low, int high, Compare compare) {
+    const Book pivot = books[high];
+    int i = low - 1;
+    for (int j = low; j < high; ++j) {
+        if (compare(books[j], pivot)) {
+            ++i;
+            std::swap(books[i], books[j]);
+        }
+    }
+    std::swap(books[i + 1], books[high]);
+    return i + 1;
+}
+
+template <typename Compare>
+void quickSortBooks(std::vector<Book>& books, int low, int high, Compare compare) {
+    if (low >= high) {
+        return;
+    }
+
+    const int pivotIndex = partitionBooks(books, low, high, compare);
+    quickSortBooks(books, low, pivotIndex - 1, compare);
+    quickSortBooks(books, pivotIndex + 1, high, compare);
+}
+
+template <typename Compare>
+void quickSortBooks(std::vector<Book>& books, Compare compare) {
+    if (books.empty()) {
+        return;
+    }
+    quickSortBooks(books, 0, static_cast<int>(books.size()) - 1, compare);
+}
 } // namespace
 
 LibraryStorage::LibraryStorage(std::string filePath)
@@ -443,7 +477,7 @@ std::vector<Book> LibraryBackendService::searchBooks(const std::string& query) c
     const auto q = normalize(query);
     std::vector<Book> sorted = storage_.books();
 
-    std::sort(sorted.begin(), sorted.end(), [](const Book& lhs, const Book& rhs) {
+    quickSortBooks(sorted, [](const Book& lhs, const Book& rhs) {
         return normalize(lhs.title) < normalize(rhs.title);
     });
 
@@ -465,7 +499,7 @@ std::vector<Book> LibraryBackendService::searchBooks(const std::string& query) c
         return result;
     }
 
-    std::sort(sorted.begin(), sorted.end(), [](const Book& lhs, const Book& rhs) {
+    quickSortBooks(sorted, [](const Book& lhs, const Book& rhs) {
         return normalize(lhs.author) < normalize(rhs.author);
     });
 
@@ -487,7 +521,7 @@ std::vector<Book> LibraryBackendService::searchBooks(const std::string& query) c
 
 std::vector<Book> LibraryBackendService::sortedBooks(SortField field, bool ascending) const {
     std::vector<Book> sorted = storage_.books();
-    std::sort(sorted.begin(), sorted.end(), [&](const Book& lhs, const Book& rhs) {
+    quickSortBooks(sorted, [&](const Book& lhs, const Book& rhs) {
         return compareBooks(lhs, rhs, field, ascending);
     });
     return sorted;
@@ -495,7 +529,7 @@ std::vector<Book> LibraryBackendService::sortedBooks(SortField field, bool ascen
 
 std::vector<ObstNode> LibraryBackendService::buildOptimalSearchTreeByIsbn() const {
     auto books = storage_.books();
-    std::sort(books.begin(), books.end(), [](const Book& lhs, const Book& rhs) {
+    quickSortBooks(books, [](const Book& lhs, const Book& rhs) {
         return lhs.isbn < rhs.isbn;
     });
 
