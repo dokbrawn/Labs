@@ -42,8 +42,8 @@ LICENSES_DIR.mkdir(exist_ok=True)
 BUILD_DIR = BASE_DIR / "build"
 BACKEND_BIN = BUILD_DIR / "library_backend"
 
-CARD_W, CARD_H = 160, 240
-COVER_W, COVER_H = 160, 120
+CARD_W, CARD_H = 190, 300
+COVER_W, COVER_H = 190, 130
 
 GENRES = {
     "Художественная": ["Роман", "Повесть", "Рассказ", "Поэзия", "Пьеса"],
@@ -359,37 +359,37 @@ def load_cover_image(path, w=COVER_W, h=COVER_H):
 # ─────────────────────────────────────────────────────────────────
 
 DARK = {
-    "bg":        "#0f0f13",
-    "surface":   "#18181f",
-    "surface2":  "#1e1e28",
-    "border":    "#2a2a38",
-    "text":      "#eeeef4",
-    "muted":     "#7070a0",
+    "bg":        "#0b1020",
+    "surface":   "#121a2b",
+    "surface2":  "#172033",
+    "border":    "#24324a",
+    "text":      "#eef2ff",
+    "muted":     "#93a0bd",
     "accent":    "#6366f1",
-    "accent2":   "#4f46e5",
+    "accent2":   "#8b5cf6",
     "danger":    "#ef4444",
     "success":   "#22c55e",
-    "card":      "#1e1e2e",
-    "card_hover":"#252535",
-    "header":    "#13131a",
-    "sidebar":   "#14141c",
+    "card":      "#111a2d",
+    "card_hover":"#16233b",
+    "header":    "#0f172a",
+    "sidebar":   "#101827",
 }
 
 LIGHT = {
-    "bg":        "#f5f4f0",
+    "bg":        "#eef3fb",
     "surface":   "#ffffff",
-    "surface2":  "#f0eff8",
-    "border":    "#e2e1ea",
-    "text":      "#1a1a2e",
-    "muted":     "#6b6b8a",
+    "surface2":  "#f2f6ff",
+    "border":    "#d8e0ef",
+    "text":      "#182033",
+    "muted":     "#66748f",
     "accent":    "#4f46e5",
     "accent2":   "#3730a3",
     "danger":    "#dc2626",
     "success":   "#16a34a",
     "card":      "#ffffff",
-    "card_hover":"#f5f4ff",
+    "card_hover":"#f6f8ff",
     "header":    "#ffffff",
-    "sidebar":   "#fafafa",
+    "sidebar":   "#f8fbff",
 }
 
 T = DARK  # текущая тема (глобально)
@@ -500,12 +500,14 @@ class BookDialog(tk.Toplevel):
         self.book     = dict(book) if book else {}
         self.result   = None
         self._photo   = None  # keep reference
+        self._license_photo = None
+        self._reprint_dates = list(self.book.get("reprint_dates", []))
 
         self.title("Редактировать книгу" if self.editing else "Добавить книгу")
         self.configure(bg=T["surface"])
         self.resizable(True, True)
-        self.geometry("780x680")
-        self.minsize(680, 580)
+        self.geometry("860x760")
+        self.minsize(760, 640)
         self.transient(master)
         self.grab_set()
 
@@ -539,22 +541,34 @@ class BookDialog(tk.Toplevel):
         body = tk.Frame(self, bg=T["surface"])
         body.pack(fill="both", expand=True)
 
-        # LEFT — cover
-        left = tk.Frame(body, bg=T["surface"], width=200)
+        # LEFT — cover / files
+        left = tk.Frame(body, bg=T["surface"], width=230)
         left.pack(side="left", fill="y", padx=20, pady=20)
         left.pack_propagate(False)
 
         tk.Label(left, text="ОБЛОЖКА", bg=T["surface"], fg=T["muted"],
                  font=("Courier New", 9, "bold")).pack(anchor="w")
 
-        self.cover_canvas = tk.Canvas(left, width=160, height=210,
+        self.cover_canvas = tk.Canvas(left, width=180, height=180,
                                       bg=T["surface2"], highlightthickness=1,
                                       highlightbackground=T["border"])
         self.cover_canvas.pack(pady=(6, 8))
         self.cover_canvas.bind("<Button-1>", lambda e: self._pick_cover_file())
         self._draw_cover_placeholder()
 
-        tk.Button(left, text="📁  Выбрать файл", command=self._pick_cover_file,
+        tk.Button(left, text="📁  Загрузить обложку", command=self._pick_cover_file,
+                  bg=T["surface2"], fg=T["text"], relief="flat",
+                  cursor="hand2", font=("Courier New", 9)).pack(fill="x", pady=2)
+
+        tk.Label(left, text="ЛИЦЕНЗИЯ", bg=T["surface"], fg=T["muted"],
+                 font=("Courier New", 9, "bold")).pack(anchor="w", pady=(14, 0))
+        self.license_canvas = tk.Canvas(left, width=180, height=90,
+                                        bg=T["surface2"], highlightthickness=1,
+                                        highlightbackground=T["border"])
+        self.license_canvas.pack(pady=(6, 8))
+        self.license_canvas.bind("<Button-1>", lambda e: self._pick_license_file())
+        self._draw_license_placeholder()
+        tk.Button(left, text="🪪  Загрузить фото лицензии", command=self._pick_license_file,
                   bg=T["surface2"], fg=T["text"], relief="flat",
                   cursor="hand2", font=("Courier New", 9)).pack(fill="x", pady=2)
 
@@ -581,8 +595,11 @@ class BookDialog(tk.Toplevel):
                                    bg=T["accent"], fg="white", relief="flat",
                                    cursor="hand2", font=("Courier New", 9))
         self.fetch_btn.pack(fill="x", pady=(4, 0))
+        self.fetch_progress = ttk.Progressbar(left, mode="indeterminate")
+        self.fetch_progress.pack(fill="x", pady=(6, 0))
+        self.fetch_progress.stop()
         self.fetch_status = tk.Label(left, text="", bg=T["surface"], fg=T["muted"],
-                                     font=("Courier New", 8), wraplength=160, justify="left")
+                                     font=("Courier New", 8), wraplength=180, justify="left")
         self.fetch_status.pack(anchor="w", pady=(4, 0))
 
         # RIGHT — fields (scrollable)
@@ -711,7 +728,27 @@ class BookDialog(tk.Toplevel):
         self._section("④  ДАТЫ")
         g4 = tk.Frame(f, bg=T["surface"]); g4.pack(fill="x"); g4.columnconfigure(0,weight=1); g4.columnconfigure(1,weight=1)
         self._field(g4, "Дата подписи в печать", "sign_date",    0, 0)
-        self._field(g4, "Дата доп. тиража",      "reprint_dates",0, 1)
+        reprint_wrap = tk.Frame(g4, bg=T["surface"])
+        reprint_wrap.grid(row=0, column=1, sticky="ew", padx=(0,12), pady=4)
+        tk.Label(reprint_wrap, text="ДОП. ТИРАЖИ", bg=T["surface"], fg=T["muted"],
+                 font=("Courier New", 8, "bold")).pack(anchor="w")
+        row = tk.Frame(reprint_wrap, bg=T["surface"])
+        row.pack(fill="x", pady=(2,4))
+        self.reprint_date_var = tk.StringVar()
+        tk.Entry(row, textvariable=self.reprint_date_var,
+                 bg=T["surface2"], fg=T["text"], insertbackground=T["text"],
+                 relief="flat", font=("Georgia", 11)).pack(side="left", fill="x", expand=True, ipady=5)
+        tk.Button(row, text="+", command=self._add_reprint_date,
+                  bg=T["accent"], fg="white", relief="flat",
+                  cursor="hand2", font=("Courier New", 10, "bold"), width=3).pack(side="left", padx=(6,0))
+        self.reprint_dates_list = tk.Listbox(reprint_wrap, height=4, bg=T["surface2"], fg=T["text"],
+                                             relief="flat", highlightthickness=0, selectbackground=T["accent"],
+                                             font=("Courier New", 9))
+        self.reprint_dates_list.pack(fill="x")
+        tk.Button(reprint_wrap, text="Удалить выбранную дату", command=self._remove_reprint_date,
+                  bg=T["surface2"], fg=T["muted"], relief="flat",
+                  cursor="hand2", font=("Courier New", 8)).pack(anchor="e", pady=(4,0))
+        self._refresh_reprint_dates_list()
 
         # ⑤ Библиотека
         self._section("⑤  БИБЛИОГРАФИЧЕСКАЯ ССЫЛКА")
@@ -730,6 +767,7 @@ class BookDialog(tk.Toplevel):
     def _update_subgenres(self):
         subs = GENRES.get(self.genre_var.get(), [])
         self.cb_subgenre["values"] = subs
+        self.cb_subgenre.configure(state="readonly" if subs else "disabled")
         if self.subgenre_var.get() not in subs:
             self.subgenre_var.set(subs[0] if subs else "")
 
@@ -741,24 +779,45 @@ class BookDialog(tk.Toplevel):
             if cid:
                 cover_path = str(COVERS_DIR / f"{self.book.get('id','0')}.jpg")
         self._show_cover(cover_path)
+        self._show_license(self.book.get("license_file", ""))
 
     def _draw_cover_placeholder(self):
         self.cover_canvas.delete("all")
-        self.cover_canvas.create_rectangle(0,0,160,210, fill=T["surface2"], outline="")
-        self.cover_canvas.create_text(80, 90, text="📖", font=("Arial", 36), fill=T["muted"])
-        self.cover_canvas.create_text(80, 140, text="Нажмите для\nвыбора файла",
+        self.cover_canvas.create_rectangle(0,0,180,180, fill=T["surface2"], outline="")
+        self.cover_canvas.create_text(90, 72, text="📖", font=("Arial", 36), fill=T["muted"])
+        self.cover_canvas.create_text(90, 122, text="Нажмите для\nвыбора файла",
                                       font=("Courier New", 9), fill=T["muted"], justify="center")
+
+    def _draw_license_placeholder(self):
+        self.license_canvas.delete("all")
+        self.license_canvas.create_rectangle(0,0,180,90, fill=T["surface2"], outline="")
+        self.license_canvas.create_text(90, 28, text="🪪", font=("Arial", 20), fill=T["muted"])
+        self.license_canvas.create_text(90, 60, text="Фото лицензии", font=("Courier New", 9),
+                                        fill=T["muted"], justify="center")
 
     def _show_cover(self, path):
         if not path: return
-        photo = load_cover_image(path, 160, 210)
+        photo = load_cover_image(path, 180, 180)
         if photo:
             self._photo = photo
             self.cover_canvas.delete("all")
-            self.cover_canvas.create_image(80, 105, image=photo)
+            self.cover_canvas.create_image(90, 90, image=photo)
             self.cover_file_path = path
         else:
             self._draw_cover_placeholder()
+
+    def _show_license(self, path):
+        if not path:
+            self._draw_license_placeholder()
+            return
+        photo = load_cover_image(path, 180, 90)
+        if photo:
+            self._license_photo = photo
+            self.license_canvas.delete("all")
+            self.license_canvas.create_image(90, 45, image=photo)
+            self.license_file_path = path
+        else:
+            self._draw_license_placeholder()
 
     def _pick_cover_file(self):
         path = filedialog.askopenfilename(
@@ -768,6 +827,35 @@ class BookDialog(tk.Toplevel):
         if path:
             self.cover_file_path = path
             self._show_cover(path)
+
+    def _pick_license_file(self):
+        path = filedialog.askopenfilename(
+            title="Выбрать фото лицензии",
+            filetypes=[("Изображения", "*.jpg *.jpeg *.png *.webp"), ("Все файлы", "*")]
+        )
+        if path:
+            self.license_file_path = path
+            self._show_license(path)
+
+    def _refresh_reprint_dates_list(self):
+        self.reprint_dates_list.delete(0, "end")
+        for value in self._reprint_dates:
+            self.reprint_dates_list.insert("end", value)
+
+    def _add_reprint_date(self):
+        value = self.reprint_date_var.get().strip()
+        if not value:
+            return
+        self._reprint_dates.append(value)
+        self.reprint_date_var.set("")
+        self._refresh_reprint_dates_list()
+
+    def _remove_reprint_date(self):
+        sel = self.reprint_dates_list.curselection()
+        if not sel:
+            return
+        del self._reprint_dates[sel[0]]
+        self._refresh_reprint_dates_list()
 
     def _fetch_api(self):
         query = self.api_var.get().strip() or self.vars.get("title", tk.StringVar()).get()
@@ -812,6 +900,12 @@ class BookDialog(tk.Toplevel):
         cover_id = str(doc.get("cover_i", "")).strip()
         if cover_id:
             self.cover_id_var.set(cover_id)
+            self._download_cover_preview(cover_id)
+
+        self.fetch_status.config(
+            text="✓ Данные загружены. При необходимости их можно вручную изменить перед сохранением.",
+            fg=T["success"],
+        )
 
         self.fetch_status.config(
             text="✓ Данные загружены. При необходимости их можно вручную изменить перед сохранением.",
@@ -827,6 +921,7 @@ class BookDialog(tk.Toplevel):
 
         biblio = self._biblio_text.get("1.0", "end").strip()
         cover_file = getattr(self, "cover_file_path", self.book.get("cover_file", ""))
+        license_file = getattr(self, "license_file_path", self.book.get("license_file", ""))
 
         result = {
             "title":         title,
@@ -842,10 +937,11 @@ class BookDialog(tk.Toplevel):
             "rating":        float(self.vars["rating"].get() or 0),
             "age":           self.vars["age"].get(),
             "sign_date":     self.vars["sign_date"].get().strip(),
-            "reprint_dates": [self.vars["reprint_dates"].get().strip()] if self.vars["reprint_dates"].get().strip() else [],
+            "reprint_dates": list(self._reprint_dates),
             "biblio":        biblio,
             "cover_id":      self.cover_id_var.get().strip(),
             "cover_file":    cover_file,
+            "license_file":  license_file,
         }
         if self.editing:
             result["id"] = self.book["id"]
@@ -1045,7 +1141,7 @@ class LibraryApp(tk.Tk):
                  relief="flat", font=("Georgia", 12))
         self._search_entry.pack(side="left", ipady=5, padx=6)
         # Placeholder вручную
-        self._search_placeholder = "Поиск по названию или автору..."
+        self._search_placeholder = "Поиск книг по названию или автору..."
         self._search_entry.insert(0, self._search_placeholder)
         self._search_entry.config(fg=T["muted"])
         self._search_entry.bind("<FocusIn>",  self._search_focus_in)
@@ -1228,19 +1324,22 @@ class LibraryApp(tk.Tk):
 
     def _make_card(self, book):
         card = tk.Frame(self._cards_frame, bg=T["card"], width=CARD_W,
-                        relief="flat", cursor="hand2")
+                        relief="flat", cursor="hand2",
+                        highlightthickness=1, highlightbackground=T["border"], highlightcolor=T["accent"])
         card.pack_propagate(False)
         card.configure(height=CARD_H)
 
         # hover
         def on_enter(e):
             card.config(bg=T["card_hover"])
+            card.config(highlightbackground=T["accent2"])
             for w in card.winfo_children():
                 try: w.config(bg=T["card_hover"])
                 except: pass
             del_btn.place(x=CARD_W-30, y=4)
         def on_leave(e):
             card.config(bg=T["card"])
+            card.config(highlightbackground=T["border"])
             for w in card.winfo_children():
                 try: w.config(bg=T["card"])
                 except: pass
@@ -1296,15 +1395,33 @@ class LibraryApp(tk.Tk):
                  font=("Courier New", 8)).pack(anchor="w")
 
         # Title
-        tk.Label(info, text=book["title"],
+        tk.Label(info, text=ellipsize(book["title"], 40),
                  bg=T["card"], fg=T["text"],
                  font=("Georgia", 11, "bold"),
                  wraplength=CARD_W-16, justify="left", anchor="w").pack(anchor="w", pady=(2,0))
 
+        tk.Label(info, text=book.get("author", "Неизвестный автор"),
+                 bg=T["card"], fg=T["muted"],
+                 font=("Georgia", 9),
+                 wraplength=CARD_W-16, justify="left", anchor="w").pack(anchor="w", pady=(1,0))
+
         # Rating stars
-        tk.Label(info, text=stars_text(book.get("rating", 0)),
+        tk.Label(info, text=f"{stars_text(book.get('rating', 0))}  {book.get('rating', 0):.1f}",
                  bg=T["card"], fg="#f59e0b",
-                 font=("Arial", 10)).pack(anchor="w")
+                 font=("Arial", 10)).pack(anchor="w", pady=(2,0))
+
+        tag_text = " · ".join([v for v in [book.get("genre", ""), book.get("subgenre", "")] if v])
+        if tag_text:
+            tk.Label(info, text=tag_text,
+                     bg=T["surface2"], fg=T["accent"],
+                     font=("Courier New", 8, "bold"),
+                     padx=6, pady=3).pack(anchor="w", pady=(4,0))
+
+        if book.get("publisher"):
+            tk.Label(info, text=book["publisher"],
+                     bg=T["card"], fg=T["muted"],
+                     font=("Courier New", 8),
+                     wraplength=CARD_W-16, justify="left", anchor="w").pack(anchor="w", pady=(4,0))
 
         # Price
         if book.get("price"):
