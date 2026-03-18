@@ -24,13 +24,7 @@
 #endif
 
 namespace {
-struct StatementDeleter {
-    void operator()(sqlite3_stmt* statement) const {
-        sqlite3_finalize(statement);
-    }
-};
-
-using StatementPtr = std::unique_ptr<sqlite3_stmt, StatementDeleter>;
+using StatementPtr = std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)>;
 
 std::string trim(const std::string& value) {
     const auto begin = value.find_first_not_of(" \t\r\n");
@@ -300,6 +294,8 @@ bool LibraryStorage::open() {
     if (db_ != nullptr) {
         return true;
     }
+    return books;
+}
 
     const auto path = std::filesystem::path(filePath_);
     if (path.has_parent_path()) {
@@ -380,7 +376,7 @@ bool LibraryStorage::ensureGenreHierarchy(const Book& book) const {
 
     if (!book.genre.empty()) {
         const char* genreSql = "INSERT OR IGNORE INTO genres(name) VALUES (?);";
-        StatementPtr stmt(nullptr);
+        StatementPtr stmt(nullptr, sqlite3_finalize);
         sqlite3_stmt* raw = nullptr;
         if (sqlite3_prepare_v2(db, genreSql, -1, &raw, nullptr) != SQLITE_OK) {
             return false;
@@ -396,7 +392,7 @@ bool LibraryStorage::ensureGenreHierarchy(const Book& book) const {
             INSERT OR IGNORE INTO subgenres(genre_id, name)
             VALUES ((SELECT id FROM genres WHERE name = ?), ?);
         )SQL";
-        StatementPtr stmt(nullptr);
+        StatementPtr stmt(nullptr, sqlite3_finalize);
         sqlite3_stmt* raw = nullptr;
         if (sqlite3_prepare_v2(db, subSql, -1, &raw, nullptr) != SQLITE_OK) {
             return false;
@@ -405,6 +401,10 @@ bool LibraryStorage::ensureGenreHierarchy(const Book& book) const {
         if (!bindText(stmt.get(), 1, book.genre) || !bindText(stmt.get(), 2, book.subgenre) || sqlite3_step(stmt.get()) == SQLITE_ERROR) {
             return false;
         }
+    }
+    query = trim(query);
+    if (query.empty()) {
+        return std::nullopt;
     }
 
     return true;
@@ -444,7 +444,7 @@ std::vector<Book> LibraryStorage::allBooks() const {
     if (sqlite3_prepare_v2(db, sql.c_str(), -1, &raw, nullptr) != SQLITE_OK) {
         return books;
     }
-    StatementPtr stmt(raw);
+    StatementPtr stmt(raw, sqlite3_finalize);
     while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
         books.push_back(readBookFromStatement(stmt.get()));
     }
@@ -463,7 +463,7 @@ std::vector<Book> LibraryStorage::searchBooks(const std::string& query) const {
     if (sqlite3_prepare_v2(db, sql.c_str(), -1, &raw, nullptr) != SQLITE_OK) {
         return books;
     }
-    StatementPtr stmt(raw);
+    StatementPtr stmt(raw, sqlite3_finalize);
     if (!bindText(stmt.get(), 1, q)) {
         return books;
     }
@@ -500,7 +500,7 @@ std::vector<Book> LibraryStorage::sortedBooks(SortField field, bool ascending) c
     if (sqlite3_prepare_v2(db, sql.c_str(), -1, &raw, nullptr) != SQLITE_OK) {
         return books;
     }
-    StatementPtr stmt(raw);
+    StatementPtr stmt(raw, sqlite3_finalize);
     while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
         books.push_back(readBookFromStatement(stmt.get()));
     }
@@ -511,6 +511,8 @@ bool LibraryStorage::upsertBook(Book& book) {
     if (!ensureGenreHierarchy(book)) {
         return false;
     }
+    return remote;
+}
 
     sqlite3* db = static_cast<sqlite3*>(db_);
     const char* sql = R"SQL(
@@ -553,7 +555,7 @@ bool LibraryStorage::upsertBook(Book& book) {
     if (sqlite3_prepare_v2(db, sql, -1, &raw, nullptr) != SQLITE_OK) {
         return false;
     }
-    StatementPtr stmt(raw);
+    StatementPtr stmt(raw, sqlite3_finalize);
 
     sqlite3_bind_int(stmt.get(), 1, book.id);
     bindText(stmt.get(), 2, book.genre);
@@ -580,6 +582,8 @@ bool LibraryStorage::upsertBook(Book& book) {
     if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
         return false;
     }
+    return books;
+}
 
     if (book.id == 0) {
         book.id = static_cast<int>(sqlite3_last_insert_rowid(db));
@@ -593,7 +597,7 @@ bool LibraryStorage::removeBookById(int id) {
     if (sqlite3_prepare_v2(db, "DELETE FROM books WHERE id = ?;", -1, &raw, nullptr) != SQLITE_OK) {
         return false;
     }
-    StatementPtr stmt(raw);
+    StatementPtr stmt(raw, sqlite3_finalize);
     sqlite3_bind_int(stmt.get(), 1, id);
     if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
         return false;
@@ -607,7 +611,7 @@ bool LibraryStorage::isEmpty() const {
     if (sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM books;", -1, &raw, nullptr) != SQLITE_OK) {
         return true;
     }
-    StatementPtr stmt(raw);
+    StatementPtr stmt(raw, sqlite3_finalize);
     if (sqlite3_step(stmt.get()) != SQLITE_ROW) {
         return true;
     }
@@ -658,81 +662,27 @@ std::optional<Book> NetworkMetadataClient::fetchByQuery(const Book& draft) const
     return remote;
 }
 
-namespace {
-Book makeDemoBook(
-    const std::string& title,
-    const std::string& author,
-    const std::string& genre,
-    const std::string& subgenre,
-    const std::string& publisher,
-    int year,
-    const std::string& format,
-    double rating,
-    double price,
-    const std::string& ageRating,
-    const std::string& isbn,
-    std::int64_t totalPrintRun,
-    const std::string& bibliographicReference,
-    const std::string& coverUrl) {
-    Book book;
-    book.title = title;
-    book.author = author;
-    book.genre = genre;
-    book.subgenre = subgenre;
-    book.publisher = publisher;
-    book.year = year;
-    book.format = format;
-    book.rating = rating;
-    book.price = price;
-    book.ageRating = ageRating;
-    book.isbn = isbn;
-    book.totalPrintRun = totalPrintRun;
-    book.bibliographicReference = bibliographicReference;
-    book.coverUrl = coverUrl;
-    book.searchFrequency = rating;
-    return book;
-}
-
-std::vector<Book> demoBooks() {
-    std::vector<Book> books;
-    books.reserve(10);
-    books.push_back(makeDemoBook("Мастер и Маргарита", "Михаил Булгаков", "Художественная", "Роман", "Эксмо", 1967, "84x108/32", 4.9, 590.0, "18+", "978-5-04-116270-1", 50000, "Булгаков М. А. Мастер и Маргарита. — М.: Эксмо, 2023. — 480 с.", "https://covers.openlibrary.org/b/id/12192618-L.jpg"));
-    books.push_back(makeDemoBook("Преступление и наказание", "Ф. Достоевский", "Художественная", "Роман", "Дет. литература", 1866, "70x100/16", 4.7, 450.0, "16+", "978-5-08-006491-5", 30000, "", "https://covers.openlibrary.org/b/id/8739200-L.jpg"));
-    books.push_back(makeDemoBook("Краткая история времени", "Стивен Хокинг", "Научная", "Физика", "АСТ", 1988, "70x100/16", 4.8, 680.0, "12+", "978-5-17-077748-3", 25000, "", "https://covers.openlibrary.org/b/id/8575708-L.jpg"));
-    books.push_back(makeDemoBook("Гарри Поттер и фил. камень", "Дж. К. Роулинг", "Детская", "Приключения", "Росмэн", 1997, "60x90/16", 4.9, 750.0, "6+", "978-5-353-01435-0", 100000, "", "https://covers.openlibrary.org/b/id/10521270-L.jpg"));
-    books.push_back(makeDemoBook("Clean Code", "Robert C. Martin", "Техническая", "Программирование", "Питер", 2008, "70x100/16", 4.6, 1200.0, "0+", "978-5-4461-0960-9", 15000, "", "https://covers.openlibrary.org/b/id/8950546-L.jpg"));
-    books.push_back(makeDemoBook("Дюна", "Фрэнк Герберт", "Художественная", "Роман", "АСТ", 1965, "84x108/32", 4.8, 820.0, "16+", "978-5-17-090658-4", 40000, "", "https://covers.openlibrary.org/b/id/10521270-L.jpg"));
-    books.push_back(makeDemoBook("1984", "Джордж Оруэлл", "Художественная", "Роман", "АСТ", 1949, "84x108/32", 4.7, 420.0, "16+", "978-5-17-108831-3", 60000, "", "https://covers.openlibrary.org/b/id/8575708-L.jpg"));
-    books.push_back(makeDemoBook("Война и мир", "Лев Толстой", "Историческая", "Новое время", "АСТ", 1869, "84x108/32", 4.6, 1100.0, "12+", "978-5-17-119218-3", 35000, "", "https://covers.openlibrary.org/b/id/9255566-L.jpg"));
-    books.push_back(makeDemoBook("Cosmos", "Карл Саган", "Научная", "Астрономия", "АСТ", 1980, "70x100/8", 4.9, 990.0, "12+", "978-5-17-094029-0", 20000, "", "https://covers.openlibrary.org/b/id/8739290-L.jpg"));
-    books.push_back(makeDemoBook("Имя розы", "Умберто Эко", "Историческая", "Средневековье", "Азбука", 1980, "84x108/32", 4.5, 650.0, "16+", "978-5-389-01806-7", 25000, "", "https://covers.openlibrary.org/b/id/8739248-L.jpg"));
-    return books;
-}
-} // namespace
-
-LibraryBackendService::LibraryBackendService(LibraryStorage storage)
-    : storage_(std::move(storage)) {}
-
-bool LibraryBackendService::initialize() {
-    if (!storage_.open()) {
+bool LibraryStorage::removeBookById(int id) {
+    sqlite3* db = static_cast<sqlite3*>(db_);
+    sqlite3_stmt* raw = nullptr;
+    if (sqlite3_prepare_v2(db, "DELETE FROM books WHERE id = ?;", -1, &raw, nullptr) != SQLITE_OK) {
         return false;
     }
-    if (!storage_.isEmpty()) {
-        return true;
+    StatementPtr stmt(raw, sqlite3_finalize);
+    sqlite3_bind_int(stmt.get(), 1, id);
+    if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
+        return false;
     }
+    return sqlite3_changes(db) > 0;
+}
 
-    for (auto book : demoBooks()) {
-        if (!storage_.upsertBook(book)) {
-            return false;
-        }
-    }
-    return true;
+bool LibraryBackendService::initialize() {
+    return storage_.open();
 }
 
 bool LibraryBackendService::addOrUpdateBook(Book& book, bool fetchFromNetwork) {
     if (fetchFromNetwork) {
-        const auto remote = networkClient_.fetchByQuery(book);
-        if (remote.has_value()) {
+        if (const auto remote = networkClient_.fetchByQuery(book); remote.has_value()) {
             if (book.title.empty()) {
                 book.title = remote->title;
             }
