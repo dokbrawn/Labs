@@ -40,7 +40,7 @@ COVERS_DIR.mkdir(exist_ok=True)
 LICENSES_DIR = BASE_DIR / "licenses"
 LICENSES_DIR.mkdir(exist_ok=True)
 BUILD_DIR = BASE_DIR / "build"
-BACKEND_NAME = "library_backend.exe" if os.name == "nt" else "library_backend"
+BACKEND_BIN = BUILD_DIR / "library_backend"
 
 CARD_W, CARD_H = 160, 240
 COVER_W, COVER_H = 160, 120
@@ -169,41 +169,16 @@ def _escape_backend_value(value):
     return value.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r").replace("=", "\\=")
 
 
-def resolve_backend_bin():
-    candidates = [
-        BUILD_DIR / BACKEND_NAME,
-        BUILD_DIR / "Debug" / BACKEND_NAME,
-        BUILD_DIR / "Release" / BACKEND_NAME,
-        BUILD_DIR / "RelWithDebInfo" / BACKEND_NAME,
-        BUILD_DIR / "MinSizeRel" / BACKEND_NAME,
-    ]
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-    return candidates[0]
-
-
 def ensure_backend_ready():
-    backend_bin = resolve_backend_bin()
-    if backend_bin.exists():
+    if BACKEND_BIN.exists():
         return
     subprocess.run(["cmake", "-S", str(BASE_DIR), "-B", str(BUILD_DIR)], check=True, cwd=BASE_DIR)
-    build_cmd = ["cmake", "--build", str(BUILD_DIR)]
-    if os.name == "nt":
-        build_cmd.extend(["--config", "Debug"])
-    subprocess.run(build_cmd, check=True, cwd=BASE_DIR)
-
-    backend_bin = resolve_backend_bin()
-    if not backend_bin.exists():
-        raise FileNotFoundError(
-            f"Не удалось найти backend после сборки. Ожидался файл: {backend_bin}"
-        )
+    subprocess.run(["cmake", "--build", str(BUILD_DIR)], check=True, cwd=BASE_DIR)
 
 
 def _backend_cmd(*args):
     ensure_backend_ready()
-    backend_bin = resolve_backend_bin()
-    completed = subprocess.run([str(backend_bin), *map(str, args)], cwd=BASE_DIR, text=True, capture_output=True, check=True)
+    completed = subprocess.run([str(BACKEND_BIN), *map(str, args)], cwd=BASE_DIR, text=True, capture_output=True, check=True)
     return completed.stdout
 
 
