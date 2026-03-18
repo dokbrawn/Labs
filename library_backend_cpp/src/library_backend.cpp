@@ -574,6 +574,8 @@ bool LibraryStorage::upsertBook(Book& book) {
     if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
         return false;
     }
+    return books;
+}
 
     if (book.id == 0) {
         book.id = static_cast<int>(sqlite3_last_insert_rowid(db));
@@ -652,40 +654,22 @@ std::optional<Book> NetworkMetadataClient::fetchByQuery(const Book& draft) const
     return remote;
 }
 
-namespace {
-std::vector<Book> demoBooks() {
-    return {
-        Book{0, "Мастер и Маргарита", "Михаил Булгаков", "Художественная", "Роман", "Эксмо", 1967, "84x108/32", 4.9, 590.0, "18+", "978-5-04-116270-1", 50000, "", {}, "", "", "Булгаков М. А. Мастер и Маргарита. — М.: Эксмо, 2023. — 480 с.", "https://covers.openlibrary.org/b/id/12192618-L.jpg", 4.9},
-        Book{0, "Преступление и наказание", "Ф. Достоевский", "Художественная", "Роман", "Дет. литература", 1866, "70x100/16", 4.7, 450.0, "16+", "978-5-08-006491-5", 30000, "", {}, "", "", "", "https://covers.openlibrary.org/b/id/8739200-L.jpg", 4.7},
-        Book{0, "Краткая история времени", "Стивен Хокинг", "Научная", "Физика", "АСТ", 1988, "70x100/16", 4.8, 680.0, "12+", "978-5-17-077748-3", 25000, "", {}, "", "", "", "https://covers.openlibrary.org/b/id/8575708-L.jpg", 4.8},
-        Book{0, "Гарри Поттер и фил. камень", "Дж. К. Роулинг", "Детская", "Приключения", "Росмэн", 1997, "60x90/16", 4.9, 750.0, "6+", "978-5-353-01435-0", 100000, "", {}, "", "", "", "https://covers.openlibrary.org/b/id/10521270-L.jpg", 4.9},
-        Book{0, "Clean Code", "Robert C. Martin", "Техническая", "Программирование", "Питер", 2008, "70x100/16", 4.6, 1200.0, "0+", "978-5-4461-0960-9", 15000, "", {}, "", "", "", "https://covers.openlibrary.org/b/id/8950546-L.jpg", 4.6},
-        Book{0, "Дюна", "Фрэнк Герберт", "Художественная", "Роман", "АСТ", 1965, "84x108/32", 4.8, 820.0, "16+", "978-5-17-090658-4", 40000, "", {}, "", "", "", "https://covers.openlibrary.org/b/id/10521270-L.jpg", 4.8},
-        Book{0, "1984", "Джордж Оруэлл", "Художественная", "Роман", "АСТ", 1949, "84x108/32", 4.7, 420.0, "16+", "978-5-17-108831-3", 60000, "", {}, "", "", "", "https://covers.openlibrary.org/b/id/8575708-L.jpg", 4.7},
-        Book{0, "Война и мир", "Лев Толстой", "Историческая", "Новое время", "АСТ", 1869, "84x108/32", 4.6, 1100.0, "12+", "978-5-17-119218-3", 35000, "", {}, "", "", "", "https://covers.openlibrary.org/b/id/9255566-L.jpg", 4.6},
-        Book{0, "Cosmos", "Карл Саган", "Научная", "Астрономия", "АСТ", 1980, "70x100/8", 4.9, 990.0, "12+", "978-5-17-094029-0", 20000, "", {}, "", "", "", "https://covers.openlibrary.org/b/id/8739290-L.jpg", 4.9},
-        Book{0, "Имя розы", "Умберто Эко", "Историческая", "Средневековье", "Азбука", 1980, "84x108/32", 4.5, 650.0, "16+", "978-5-389-01806-7", 25000, "", {}, "", "", "", "https://covers.openlibrary.org/b/id/8739248-L.jpg", 4.5},
-    };
-}
-} // namespace
-
-LibraryBackendService::LibraryBackendService(LibraryStorage storage)
-    : storage_(std::move(storage)) {}
-
-bool LibraryBackendService::initialize() {
-    if (!storage_.open()) {
+bool LibraryStorage::removeBookById(int id) {
+    sqlite3* db = static_cast<sqlite3*>(db_);
+    sqlite3_stmt* raw = nullptr;
+    if (sqlite3_prepare_v2(db, "DELETE FROM books WHERE id = ?;", -1, &raw, nullptr) != SQLITE_OK) {
         return false;
     }
-    if (!storage_.isEmpty()) {
-        return true;
+    StatementPtr stmt(raw, sqlite3_finalize);
+    sqlite3_bind_int(stmt.get(), 1, id);
+    if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
+        return false;
     }
+    return sqlite3_changes(db) > 0;
+}
 
-    for (auto book : demoBooks()) {
-        if (!storage_.upsertBook(book)) {
-            return false;
-        }
-    }
-    return true;
+bool LibraryBackendService::initialize() {
+    return storage_.open();
 }
 
 bool LibraryBackendService::addOrUpdateBook(Book& book, bool fetchFromNetwork) {

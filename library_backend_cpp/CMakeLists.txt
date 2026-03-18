@@ -24,20 +24,10 @@ set_target_properties(library_backend PROPERTIES
 )
 
 if(WIN32)
-    file(GENERATE
-        OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/copy_runtime_dlls_$<CONFIG>.cmake"
-        CONTENT [=[
-set(runtime_dlls "$<JOIN:$<TARGET_RUNTIME_DLLS:library_backend>,;>")
-if(NOT runtime_dlls STREQUAL "")
-    execute_process(
-        COMMAND "${CMAKE_COMMAND}" -E copy_if_different ${runtime_dlls} "$<TARGET_FILE_DIR:library_backend>"
-        COMMAND_ERROR_IS_FATAL ANY
-    )
-endif()
-]=]
-    )
-
     add_custom_command(TARGET library_backend POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -P "${CMAKE_CURRENT_BINARY_DIR}/copy_runtime_dlls_$<CONFIG>.cmake"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_RUNTIME_DLLS:library_backend>
+            $<TARGET_FILE_DIR:library_backend>
+        COMMAND_EXPAND_LISTS
     )
 endif()
