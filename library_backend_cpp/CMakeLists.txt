@@ -14,23 +14,31 @@ add_executable(library_backend
 )
 
 target_include_directories(library_backend PRIVATE src)
+target_link_libraries(library_backend PRIVATE SQLite::SQLite3)
 
-# Исправлено имя цели на SQLite3::SQLite3
-target_link_libraries(library_backend PRIVATE SQLite3::SQLite3)
-
-# Настройка выходной директории
 set_target_properties(library_backend PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_BINARY_DIR}"
 )
 
-# ИСПРАВЛЕННЫЙ БЛОК КОПИРОВАНИЯ DLL
-# Используем более надёжный подход с проверкой
 if(WIN32)
+    file(GENERATE
+        OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/copy_runtime_dlls_$<CONFIG>.cmake"
+        CONTENT [=[
+set(runtime_dlls "$<JOIN:$<TARGET_RUNTIME_DLLS:library_backend>,;>")
+if(NOT runtime_dlls STREQUAL "")
+    execute_process(
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different ${runtime_dlls} "$<TARGET_FILE_DIR:library_backend>"
+        COMMAND_ERROR_IS_FATAL ANY
+    )
+endif()
+]=]
+    )
+
     add_custom_command(TARGET library_backend POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E echo "Build completed: $<TARGET_FILE:library_backend>"
-        COMMAND_EXPAND_LISTS
-        VERBATIM
+        COMMAND ${CMAKE_COMMAND} -P "${CMAKE_CURRENT_BINARY_DIR}/copy_runtime_dlls_$<CONFIG>.cmake"
     )
 endif()
