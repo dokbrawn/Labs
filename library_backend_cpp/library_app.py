@@ -307,19 +307,19 @@ def save_data(data):
     data["books"] = backend_list_books()
     data["next_id"] = max((b["id"] for b in data["books"]), default=0) + 1
 
-def fetch_book_info(query, callback):
-    """Запрос к Open Library API в фоновом потоке"""
+def fetch_book_suggestions(query, callback, limit=10):
+    """Запрос нескольких вариантов книг из Open Library API в фоновом потоке"""
     def run():
         try:
             q = urllib.parse.quote(query)
-            url = f"https://openlibrary.org/search.json?q={q}&limit=1&fields=title,author_name,first_publish_year,isbn,number_of_pages_median,cover_i,publisher,ratings_average"
+            url = f"https://openlibrary.org/search.json?q={q}&limit={int(limit)}&fields=title,author_name,first_publish_year,isbn,number_of_pages_median,cover_i,publisher,ratings_average"
             req = urllib.request.Request(url, headers={"User-Agent": "LibraryDB/1.0"})
             with urllib.request.urlopen(req, timeout=8) as r:
                 data = json.loads(r.read())
             docs = data.get("docs", [])
-            callback(docs[0] if docs else None, None)
+            callback(docs, None)
         except Exception as e:
-            callback(None, str(e))
+            callback([], str(e))
     threading.Thread(target=run, daemon=True).start()
 
 def download_cover(cover_id, book_id, callback):
@@ -400,6 +400,93 @@ def stars_text(rating):
     half  = 1 if (rating - full) >= 0.5 else 0
     empty = 5 - full - half
     return "★" * full + ("½" if half else "") + "☆" * empty
+
+
+class ApiResultsDialog(tk.Toplevel):
+    def __init__(self, master, docs):
+        super().__init__(master)
+        self.docs = docs
+        self.selected_doc = None
+
+        self.title("Выберите книгу из Open Library")
+        self.geometry("760x420")
+        self.minsize(640, 320)
+        self.configure(bg=T["surface"])
+        self.transient(master)
+        self.grab_set()
+
+        self._build()
+
+    def _build(self):
+        tk.Label(
+            self,
+            text="Найденные книги — выберите нужную запись",
+            bg=T["surface"],
+            fg=T["text"],
+            font=("Georgia", 13, "bold"),
+        ).pack(anchor="w", padx=16, pady=(16, 8))
+
+        cols = ("title", "author", "year", "isbn")
+        tree = ttk.Treeview(self, columns=cols, show="headings", height=12)
+        tree.heading("title", text="Название")
+        tree.heading("author", text="Автор")
+        tree.heading("year", text="Год")
+        tree.heading("isbn", text="ISBN")
+        tree.column("title", width=280, anchor="w")
+        tree.column("author", width=180, anchor="w")
+        tree.column("year", width=70, anchor="center")
+        tree.column("isbn", width=180, anchor="w")
+        tree.pack(fill="both", expand=True, padx=16, pady=8)
+        self.tree = tree
+
+        for idx, doc in enumerate(self.docs):
+            title = doc.get("title", "Без названия")
+            author = ", ".join(doc.get("author_name", [])[:2]) if doc.get("author_name") else "—"
+            year = doc.get("first_publish_year", "—")
+            isbn = doc.get("isbn", ["—"])[0] if doc.get("isbn") else "—"
+            tree.insert("", "end", iid=str(idx), values=(title, author, year, isbn))
+
+        tree.bind("<Double-1>", lambda *_: self._confirm())
+
+        actions = tk.Frame(self, bg=T["surface"])
+        actions.pack(fill="x", padx=16, pady=(0, 16))
+        tk.Button(
+            actions,
+            text="Отмена",
+            command=self.destroy,
+            bg=T["surface2"],
+            fg=T["muted"],
+            relief="flat",
+            cursor="hand2",
+            font=("Courier New", 10),
+            padx=14,
+            pady=6,
+        ).pack(side="left")
+        tk.Button(
+            actions,
+            text="Выбрать",
+            command=self._confirm,
+            bg=T["accent"],
+            fg="white",
+            relief="flat",
+            cursor="hand2",
+            font=("Courier New", 10, "bold"),
+            padx=14,
+            pady=6,
+        ).pack(side="right")
+
+        if self.docs:
+            first = tree.get_children()[0]
+            tree.selection_set(first)
+            tree.focus(first)
+
+    def _confirm(self):
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showwarning("Выбор книги", "Сначала выберите книгу из списка.", parent=self)
+            return
+        self.selected_doc = self.docs[int(selected[0])]
+        self.destroy()
 
 # ─────────────────────────────────────────────────────────────────
 # ДИАЛОГ: ДОБАВИТЬ / РЕДАКТИРОВАТЬ КНИГУ
@@ -688,40 +775,48 @@ class BookDialog(tk.Toplevel):
             self.fetch_status.config(text="Введите название для поиска", fg=T["danger"])
             return
         self.fetch_btn.config(state="disabled", text="⏳ Загрузка...")
-        self.fetch_status.config(text="Запрос к Open Library...", fg=T["muted"])
+        self.fetch_status.config(text="Ищу книги в Open Library...", fg=T["muted"])
 
-        def on_result(doc, err):
-            self.after(0, lambda: self._on_api_result(doc, err))
+        def on_result(docs, err):
+            self.after(0, lambda: self._on_api_results(docs, err))
 
-        fetch_book_info(query, on_result)
+        fetch_book_suggestions(query, on_result)
 
-    def _on_api_result(self, doc, err):
+    def _on_api_results(self, docs, err):
         self.fetch_btn.config(state="normal", text="🌐  Загрузить данные")
-        if err or not doc:
+        if err or not docs:
             self.fetch_status.config(text=f"Не найдено: {err or 'нет результатов'}", fg=T["danger"])
             return
+        dialog = ApiResultsDialog(self, docs)
+        self.wait_window(dialog)
+        if not dialog.selected_doc:
+            self.fetch_status.config(text="Выбор книги отменен", fg=T["muted"])
+            return
+        self._apply_api_doc(dialog.selected_doc)
 
-        # Заполнить поля из API
-        if doc.get("title") and not self.vars["title"].get():
+    def _apply_api_doc(self, doc):
+        # Полностью переносим выбранную запись в форму, но пользователь может дальше вручную править поля.
+        if doc.get("title"):
             self.vars["title"].set(doc["title"])
-        if doc.get("author_name") and not self.vars["author"].get():
+        if doc.get("author_name"):
             self.vars["author"].set(doc["author_name"][0])
-        if doc.get("first_publish_year") and not self.vars["year"].get():
+        if doc.get("first_publish_year"):
             self.vars["year"].set(str(doc["first_publish_year"]))
         if doc.get("isbn"):
             self.vars["isbn"].set(doc["isbn"][0])
         if doc.get("publisher"):
             self.vars["publisher"].set(doc["publisher"][0] if isinstance(doc["publisher"], list) else doc["publisher"])
-        if doc.get("number_of_pages_median"):
-            pass  # нет поля pages в форме напрямую
         if doc.get("ratings_average"):
             self.vars["rating"].set(f"{doc['ratings_average']:.1f}")
 
-        cover_id = str(doc.get("cover_i", ""))
+        cover_id = str(doc.get("cover_i", "")).strip()
         if cover_id:
             self.cover_id_var.set(cover_id)
 
-        self.fetch_status.config(text="✓ Данные загружены!", fg=T["success"])
+        self.fetch_status.config(
+            text="✓ Данные загружены. При необходимости их можно вручную изменить перед сохранением.",
+            fg=T["success"],
+        )
 
     def _save(self):
         title  = self.vars["title"].get().strip()
