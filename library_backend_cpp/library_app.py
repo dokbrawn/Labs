@@ -25,6 +25,12 @@ try:
 except ImportError:
     PIL_OK = False
 
+def ellipsize(text: str, max_length: int) -> str:
+    """Truncate long text and add '...' (used for card titles)."""
+    if len(text) <= max_length:
+        return text
+    return text[:max_length - 3] + "..."
+
 try:
     import urllib.request
     import urllib.parse
