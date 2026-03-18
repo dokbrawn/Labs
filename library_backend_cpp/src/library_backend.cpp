@@ -294,6 +294,8 @@ bool LibraryStorage::open() {
     if (db_ != nullptr) {
         return true;
     }
+    return books;
+}
 
     const auto path = std::filesystem::path(filePath_);
     if (path.has_parent_path()) {
@@ -400,6 +402,10 @@ bool LibraryStorage::ensureGenreHierarchy(const Book& book) const {
             return false;
         }
     }
+    query = trim(query);
+    if (query.empty()) {
+        return std::nullopt;
+    }
 
     return true;
 }
@@ -505,6 +511,8 @@ bool LibraryStorage::upsertBook(Book& book) {
     if (!ensureGenreHierarchy(book)) {
         return false;
     }
+    return remote;
+}
 
     sqlite3* db = static_cast<sqlite3*>(db_);
     const char* sql = R"SQL(
