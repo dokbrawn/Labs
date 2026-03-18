@@ -28,7 +28,7 @@ Book demoBook() {
 } // namespace
 
 int main() {
-    LibraryStorage storage("data/library.db");
+    LibraryStorage storage("data/library.tsv");
     LibraryBackendService service(std::move(storage));
 
     if (!service.initialize()) {
