@@ -40,7 +40,7 @@ COVERS_DIR.mkdir(exist_ok=True)
 LICENSES_DIR = BASE_DIR / "licenses"
 LICENSES_DIR.mkdir(exist_ok=True)
 BUILD_DIR = BASE_DIR / "build"
-BACKEND_NAME = "library_backend.exe" if os.name == "nt" else "library_backend"
+BACKEND_BIN = BUILD_DIR / "library_backend"
 
 CARD_W, CARD_H = 190, 300
 COVER_W, COVER_H = 190, 130
@@ -169,41 +169,16 @@ def _escape_backend_value(value):
     return value.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r").replace("=", "\\=")
 
 
-def resolve_backend_bin():
-    candidates = [
-        BUILD_DIR / BACKEND_NAME,
-        BUILD_DIR / "Debug" / BACKEND_NAME,
-        BUILD_DIR / "Release" / BACKEND_NAME,
-        BUILD_DIR / "RelWithDebInfo" / BACKEND_NAME,
-        BUILD_DIR / "MinSizeRel" / BACKEND_NAME,
-    ]
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-    return candidates[0]
-
-
 def ensure_backend_ready():
-    backend_bin = resolve_backend_bin()
-    if backend_bin.exists():
+    if BACKEND_BIN.exists():
         return
     subprocess.run(["cmake", "-S", str(BASE_DIR), "-B", str(BUILD_DIR)], check=True, cwd=BASE_DIR)
-    build_cmd = ["cmake", "--build", str(BUILD_DIR)]
-    if os.name == "nt":
-        build_cmd.extend(["--config", "Debug"])
-    subprocess.run(build_cmd, check=True, cwd=BASE_DIR)
-
-    backend_bin = resolve_backend_bin()
-    if not backend_bin.exists():
-        raise FileNotFoundError(
-            f"Не удалось найти backend после сборки. Ожидался файл: {backend_bin}"
-        )
+    subprocess.run(["cmake", "--build", str(BUILD_DIR)], check=True, cwd=BASE_DIR)
 
 
 def _backend_cmd(*args):
     ensure_backend_ready()
-    backend_bin = resolve_backend_bin()
-    completed = subprocess.run([str(backend_bin), *map(str, args)], cwd=BASE_DIR, text=True, capture_output=True, check=True)
+    completed = subprocess.run([str(BACKEND_BIN), *map(str, args)], cwd=BASE_DIR, text=True, capture_output=True, check=True)
     return completed.stdout
 
 
@@ -425,11 +400,6 @@ def stars_text(rating):
     half  = 1 if (rating - full) >= 0.5 else 0
     empty = 5 - full - half
     return "★" * full + ("½" if half else "") + "☆" * empty
-
-
-def ellipsize(text, limit=42):
-    text = (text or "").strip()
-    return text if len(text) <= limit else text[: max(0, limit - 1)].rstrip() + "…"
 
 
 class ApiResultsDialog(tk.Toplevel):
@@ -893,7 +863,6 @@ class BookDialog(tk.Toplevel):
             self.fetch_status.config(text="Введите название для поиска", fg=T["danger"])
             return
         self.fetch_btn.config(state="disabled", text="⏳ Загрузка...")
-        self.fetch_progress.start(10)
         self.fetch_status.config(text="Ищу книги в Open Library...", fg=T["muted"])
 
         def on_result(docs, err):
@@ -903,7 +872,6 @@ class BookDialog(tk.Toplevel):
 
     def _on_api_results(self, docs, err):
         self.fetch_btn.config(state="normal", text="🌐  Загрузить данные")
-        self.fetch_progress.stop()
         if err or not docs:
             self.fetch_status.config(text=f"Не найдено: {err or 'нет результатов'}", fg=T["danger"])
             return
@@ -939,35 +907,10 @@ class BookDialog(tk.Toplevel):
             fg=T["success"],
         )
 
-    def _download_cover_preview(self, cover_id):
-        preview_path = COVERS_DIR / f"preview_{cover_id}.jpg"
-
-        if preview_path.exists():
-            self.cover_file_path = str(preview_path)
-            self._show_cover(str(preview_path))
-            return
-
-        self.fetch_status.config(text="Загружаю обложку...", fg=T["muted"])
-        self.fetch_progress.start(10)
-
-        def on_done(path, err):
-            def update_ui():
-                self.fetch_progress.stop()
-                if path:
-                    self.cover_file_path = path
-                    self._show_cover(path)
-                    self.fetch_status.config(
-                        text="✓ Данные и обложка загружены. При необходимости их можно вручную изменить перед сохранением.",
-                        fg=T["success"],
-                    )
-                else:
-                    self.fetch_status.config(
-                        text=f"Данные загружены, но обложку скачать не удалось: {err or 'неизвестная ошибка'}",
-                        fg=T["muted"],
-                    )
-            self.after(0, update_ui)
-
-        download_cover(cover_id, f"preview_{cover_id}", on_done)
+        self.fetch_status.config(
+            text="✓ Данные загружены. При необходимости их можно вручную изменить перед сохранением.",
+            fg=T["success"],
+        )
 
     def _save(self):
         title  = self.vars["title"].get().strip()
