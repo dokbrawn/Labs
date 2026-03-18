@@ -13,6 +13,8 @@ import os
 import threading
 import shutil
 import math
+import subprocess
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -35,9 +37,13 @@ BASE_DIR   = Path(__file__).parent
 DATA_FILE  = BASE_DIR / "library_data.json"
 COVERS_DIR = BASE_DIR / "covers"
 COVERS_DIR.mkdir(exist_ok=True)
+LICENSES_DIR = BASE_DIR / "licenses"
+LICENSES_DIR.mkdir(exist_ok=True)
+BUILD_DIR = BASE_DIR / "build"
+BACKEND_NAME = "library_backend.exe" if os.name == "nt" else "library_backend"
 
-CARD_W, CARD_H = 160, 240
-COVER_W, COVER_H = 160, 120
+CARD_W, CARD_H = 190, 300
+COVER_W, COVER_H = 190, 130
 
 GENRES = {
     "Художественная": ["Роман", "Повесть", "Рассказ", "Поэзия", "Пьеса"],
@@ -59,18 +65,6 @@ SORT_FIELDS = [
     ("age",       "Возрастной рейтинг"),
 ]
 
-INITIAL_BOOKS = [
-    {"id": 1,  "title": "Мастер и Маргарита",       "author": "Михаил Булгаков",   "year": 1967, "genre": "Художественная", "subgenre": "Роман",           "rating": 4.9, "price": 590,  "age": "18+", "isbn": "978-5-04-116270-1", "publisher": "Эксмо",            "format": "84x108/32", "edition": 50000, "sign_date": "", "reprint_dates": [], "biblio": "Булгаков М. А. Мастер и Маргарита. — М.: Эксмо, 2023. — 480 с.", "cover_id": "12192618", "cover_file": ""},
-    {"id": 2,  "title": "Преступление и наказание",  "author": "Ф. Достоевский",    "year": 1866, "genre": "Художественная", "subgenre": "Роман",           "rating": 4.7, "price": 450,  "age": "16+", "isbn": "978-5-08-006491-5", "publisher": "Дет. литература", "format": "70x100/16", "edition": 30000, "sign_date": "", "reprint_dates": [], "biblio": "", "cover_id": "8739200",  "cover_file": ""},
-    {"id": 3,  "title": "Краткая история времени",   "author": "Стивен Хокинг",     "year": 1988, "genre": "Научная",        "subgenre": "Физика",          "rating": 4.8, "price": 680,  "age": "12+", "isbn": "978-5-17-077748-3", "publisher": "АСТ",              "format": "70x100/16", "edition": 25000, "sign_date": "", "reprint_dates": [], "biblio": "", "cover_id": "8575708",  "cover_file": ""},
-    {"id": 4,  "title": "Гарри Поттер и фил. камень","author": "Дж. К. Роулинг",    "year": 1997, "genre": "Детская",        "subgenre": "Приключения",     "rating": 4.9, "price": 750,  "age": "6+",  "isbn": "978-5-353-01435-0", "publisher": "Росмэн",           "format": "60x90/16",  "edition": 100000,"sign_date": "", "reprint_dates": [], "biblio": "", "cover_id": "10521270", "cover_file": ""},
-    {"id": 5,  "title": "Чистый код",                "author": "Роберт Мартин",     "year": 2008, "genre": "Техническая",    "subgenre": "Программирование","rating": 4.6, "price": 1200, "age": "0+",  "isbn": "978-5-4461-0960-9", "publisher": "Питер",            "format": "70x100/16", "edition": 15000, "sign_date": "", "reprint_dates": [], "biblio": "", "cover_id": "8950546",  "cover_file": ""},
-    {"id": 6,  "title": "Дюна",                      "author": "Фрэнк Герберт",     "year": 1965, "genre": "Художественная", "subgenre": "Роман",           "rating": 4.8, "price": 820,  "age": "16+", "isbn": "978-5-17-090658-4", "publisher": "АСТ",              "format": "84x108/32", "edition": 40000, "sign_date": "", "reprint_dates": [], "biblio": "", "cover_id": "10521270", "cover_file": ""},
-    {"id": 7,  "title": "1984",                      "author": "Джордж Оруэлл",     "year": 1949, "genre": "Художественная", "subgenre": "Роман",           "rating": 4.7, "price": 420,  "age": "16+", "isbn": "978-5-17-108831-3", "publisher": "АСТ",              "format": "84x108/32", "edition": 60000, "sign_date": "", "reprint_dates": [], "biblio": "", "cover_id": "8575708",  "cover_file": ""},
-    {"id": 8,  "title": "Война и мир",               "author": "Лев Толстой",       "year": 1869, "genre": "Историческая",  "subgenre": "Новое время",     "rating": 4.6, "price": 1100, "age": "12+", "isbn": "978-5-17-119218-3", "publisher": "АСТ",              "format": "84x108/32", "edition": 35000, "sign_date": "", "reprint_dates": [], "biblio": "", "cover_id": "9255566",  "cover_file": ""},
-    {"id": 9,  "title": "Cosmos",                    "author": "Карл Саган",        "year": 1980, "genre": "Научная",        "subgenre": "Астрономия",      "rating": 4.9, "price": 990,  "age": "12+", "isbn": "978-5-17-094029-0", "publisher": "АСТ",              "format": "70x100/8",  "edition": 20000, "sign_date": "", "reprint_dates": [], "biblio": "", "cover_id": "8739290",  "cover_file": ""},
-    {"id": 10, "title": "Имя розы",                  "author": "Умберто Эко",       "year": 1980, "genre": "Историческая",  "subgenre": "Средневековье",   "rating": 4.5, "price": 650,  "age": "16+", "isbn": "978-5-389-01806-7", "publisher": "Азбука",           "format": "84x108/32", "edition": 25000, "sign_date": "", "reprint_dates": [], "biblio": "", "cover_id": "8739248",  "cover_file": ""},
-]
 
 # ─────────────────────────────────────────────────────────────────
 # АЛГОРИТМЫ
@@ -158,34 +152,183 @@ def bst_search(root, query):
 # РАБОТА С ДАННЫМИ
 # ─────────────────────────────────────────────────────────────────
 
+def _escape_backend_value(value):
+    value = "" if value is None else str(value)
+    return value.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r").replace("=", "\\=")
+
+
+def resolve_backend_bin():
+    candidates = [
+        BUILD_DIR / BACKEND_NAME,
+        BUILD_DIR / "Debug" / BACKEND_NAME,
+        BUILD_DIR / "Release" / BACKEND_NAME,
+        BUILD_DIR / "RelWithDebInfo" / BACKEND_NAME,
+        BUILD_DIR / "MinSizeRel" / BACKEND_NAME,
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
+def ensure_backend_ready():
+    backend_bin = resolve_backend_bin()
+    if backend_bin.exists():
+        return
+    subprocess.run(["cmake", "-S", str(BASE_DIR), "-B", str(BUILD_DIR)], check=True, cwd=BASE_DIR)
+    build_cmd = ["cmake", "--build", str(BUILD_DIR)]
+    if os.name == "nt":
+        build_cmd.extend(["--config", "Debug"])
+    subprocess.run(build_cmd, check=True, cwd=BASE_DIR)
+
+    backend_bin = resolve_backend_bin()
+    if not backend_bin.exists():
+        raise FileNotFoundError(
+            f"Не удалось найти backend после сборки. Ожидался файл: {backend_bin}"
+        )
+
+
+def _backend_cmd(*args):
+    ensure_backend_ready()
+    backend_bin = resolve_backend_bin()
+    completed = subprocess.run([str(backend_bin), *map(str, args)], cwd=BASE_DIR, text=True, capture_output=True, check=True)
+    return completed.stdout
+
+
+def _parse_backend_books(payload):
+    books = []
+    current = None
+    for raw_line in payload.splitlines():
+        line = raw_line.rstrip("\n")
+        if line == "BEGIN_BOOK":
+            current = {}
+            continue
+        if line == "END_BOOK":
+            if current is not None:
+                books.append(current)
+            current = None
+            continue
+        if current is None or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        value = value.replace("\\n", "\n").replace("\\r", "\r").replace("\\=", "=").replace("\\\\", "\\")
+        current[key] = value
+
+    normalized = []
+    for item in books:
+        cover_url = item.get("cover_url", "")
+        cover_id = ""
+        if "/b/id/" in cover_url:
+            cover_id = cover_url.split("/b/id/")[-1].split("-")[0]
+        normalized.append({
+            "id": int(item.get("id", 0) or 0),
+            "title": item.get("title", ""),
+            "author": item.get("author", ""),
+            "genre": item.get("genre", ""),
+            "subgenre": item.get("subgenre", ""),
+            "publisher": item.get("publisher", ""),
+            "year": int(float(item.get("year", 0) or 0)),
+            "format": item.get("format", ""),
+            "rating": float(item.get("rating", 0) or 0),
+            "price": float(item.get("price", 0) or 0),
+            "age": item.get("age_rating", "0+"),
+            "isbn": item.get("isbn", ""),
+            "edition": int(float(item.get("total_print_run", 0) or 0)),
+            "sign_date": item.get("signed_to_print_date", ""),
+            "reprint_dates": [v for v in item.get("additional_print_dates", "").split("|") if v],
+            "cover_file": item.get("cover_image_path", ""),
+            "license_file": item.get("license_image_path", ""),
+            "biblio": item.get("bibliographic_reference", ""),
+            "cover_url": cover_url,
+            "cover_id": cover_id,
+            "search_frequency": float(item.get("search_frequency", 1) or 1),
+        })
+    return normalized
+
+
+def _book_to_backend_record(book):
+    return {
+        "id": book.get("id", 0),
+        "title": book.get("title", ""),
+        "author": book.get("author", ""),
+        "genre": book.get("genre", ""),
+        "subgenre": book.get("subgenre", ""),
+        "publisher": book.get("publisher", ""),
+        "year": book.get("year", 0),
+        "format": book.get("format", ""),
+        "rating": book.get("rating", 0),
+        "price": book.get("price", 0),
+        "age_rating": book.get("age", "0+"),
+        "isbn": book.get("isbn", ""),
+        "total_print_run": book.get("edition", 0),
+        "signed_to_print_date": book.get("sign_date", ""),
+        "additional_print_dates": "|".join(book.get("reprint_dates", [])),
+        "cover_image_path": book.get("cover_file", ""),
+        "license_image_path": book.get("license_file", ""),
+        "bibliographic_reference": book.get("biblio", ""),
+        "cover_url": book.get("cover_url", ""),
+        "search_frequency": book.get("search_frequency", max(1.0, float(book.get("rating", 0) or 0))),
+    }
+
+
+def backend_list_books():
+    return _parse_backend_books(_backend_cmd("list"))
+
+
+def backend_search_books(query):
+    return _parse_backend_books(_backend_cmd("search", query))
+
+
+def backend_sort_books(field, ascending=True):
+    return _parse_backend_books(_backend_cmd("sort", field, "asc" if ascending else "desc"))
+
+
+def backend_upsert_book(book, fetch_network=True):
+    record = _book_to_backend_record(book)
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, suffix=".book", dir=BASE_DIR) as tmp:
+        tmp.write("BEGIN_BOOK\n")
+        for key, value in record.items():
+            tmp.write(f"{key}={_escape_backend_value(value)}\n")
+        tmp.write("END_BOOK\n")
+        tmp_path = tmp.name
+    try:
+        args = ["upsert", tmp_path]
+        if fetch_network:
+            args.append("--fetch-network")
+        books = _parse_backend_books(_backend_cmd(*args))
+        return books[0] if books else None
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+
+
+def backend_remove_book(book_id):
+    _backend_cmd("remove", str(book_id))
+
+
 def load_data():
-    if DATA_FILE.exists():
-        try:
-            with open(DATA_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    data = {"books": INITIAL_BOOKS, "next_id": len(INITIAL_BOOKS) + 1}
-    save_data(data)
-    return data
+    _backend_cmd("init")
+    books = backend_list_books()
+    next_id = max((b["id"] for b in books), default=0) + 1
+    return {"books": books, "next_id": next_id}
+
 
 def save_data(data):
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    data["books"] = backend_list_books()
+    data["next_id"] = max((b["id"] for b in data["books"]), default=0) + 1
 
-def fetch_book_info(query, callback):
-    """Запрос к Open Library API в фоновом потоке"""
+def fetch_book_suggestions(query, callback, limit=10):
+    """Запрос нескольких вариантов книг из Open Library API в фоновом потоке"""
     def run():
         try:
             q = urllib.parse.quote(query)
-            url = f"https://openlibrary.org/search.json?q={q}&limit=1&fields=title,author_name,first_publish_year,isbn,number_of_pages_median,cover_i,publisher,ratings_average"
+            url = f"https://openlibrary.org/search.json?q={q}&limit={int(limit)}&fields=title,author_name,first_publish_year,isbn,number_of_pages_median,cover_i,publisher,ratings_average"
             req = urllib.request.Request(url, headers={"User-Agent": "LibraryDB/1.0"})
             with urllib.request.urlopen(req, timeout=8) as r:
                 data = json.loads(r.read())
             docs = data.get("docs", [])
-            callback(docs[0] if docs else None, None)
+            callback(docs, None)
         except Exception as e:
-            callback(None, str(e))
+            callback([], str(e))
     threading.Thread(target=run, daemon=True).start()
 
 def download_cover(cover_id, book_id, callback):
@@ -225,37 +368,37 @@ def load_cover_image(path, w=COVER_W, h=COVER_H):
 # ─────────────────────────────────────────────────────────────────
 
 DARK = {
-    "bg":        "#0f0f13",
-    "surface":   "#18181f",
-    "surface2":  "#1e1e28",
-    "border":    "#2a2a38",
-    "text":      "#eeeef4",
-    "muted":     "#7070a0",
+    "bg":        "#0b1020",
+    "surface":   "#121a2b",
+    "surface2":  "#172033",
+    "border":    "#24324a",
+    "text":      "#eef2ff",
+    "muted":     "#93a0bd",
     "accent":    "#6366f1",
-    "accent2":   "#4f46e5",
+    "accent2":   "#8b5cf6",
     "danger":    "#ef4444",
     "success":   "#22c55e",
-    "card":      "#1e1e2e",
-    "card_hover":"#252535",
-    "header":    "#13131a",
-    "sidebar":   "#14141c",
+    "card":      "#111a2d",
+    "card_hover":"#16233b",
+    "header":    "#0f172a",
+    "sidebar":   "#101827",
 }
 
 LIGHT = {
-    "bg":        "#f5f4f0",
+    "bg":        "#eef3fb",
     "surface":   "#ffffff",
-    "surface2":  "#f0eff8",
-    "border":    "#e2e1ea",
-    "text":      "#1a1a2e",
-    "muted":     "#6b6b8a",
+    "surface2":  "#f2f6ff",
+    "border":    "#d8e0ef",
+    "text":      "#182033",
+    "muted":     "#66748f",
     "accent":    "#4f46e5",
     "accent2":   "#3730a3",
     "danger":    "#dc2626",
     "success":   "#16a34a",
     "card":      "#ffffff",
-    "card_hover":"#f5f4ff",
+    "card_hover":"#f6f8ff",
     "header":    "#ffffff",
-    "sidebar":   "#fafafa",
+    "sidebar":   "#f8fbff",
 }
 
 T = DARK  # текущая тема (глобально)
@@ -266,6 +409,98 @@ def stars_text(rating):
     half  = 1 if (rating - full) >= 0.5 else 0
     empty = 5 - full - half
     return "★" * full + ("½" if half else "") + "☆" * empty
+
+
+def ellipsize(text, limit=42):
+    text = (text or "").strip()
+    return text if len(text) <= limit else text[: max(0, limit - 1)].rstrip() + "…"
+
+
+class ApiResultsDialog(tk.Toplevel):
+    def __init__(self, master, docs):
+        super().__init__(master)
+        self.docs = docs
+        self.selected_doc = None
+
+        self.title("Выберите книгу из Open Library")
+        self.geometry("760x420")
+        self.minsize(640, 320)
+        self.configure(bg=T["surface"])
+        self.transient(master)
+        self.grab_set()
+
+        self._build()
+
+    def _build(self):
+        tk.Label(
+            self,
+            text="Найденные книги — выберите нужную запись",
+            bg=T["surface"],
+            fg=T["text"],
+            font=("Georgia", 13, "bold"),
+        ).pack(anchor="w", padx=16, pady=(16, 8))
+
+        cols = ("title", "author", "year", "isbn")
+        tree = ttk.Treeview(self, columns=cols, show="headings", height=12)
+        tree.heading("title", text="Название")
+        tree.heading("author", text="Автор")
+        tree.heading("year", text="Год")
+        tree.heading("isbn", text="ISBN")
+        tree.column("title", width=280, anchor="w")
+        tree.column("author", width=180, anchor="w")
+        tree.column("year", width=70, anchor="center")
+        tree.column("isbn", width=180, anchor="w")
+        tree.pack(fill="both", expand=True, padx=16, pady=8)
+        self.tree = tree
+
+        for idx, doc in enumerate(self.docs):
+            title = doc.get("title", "Без названия")
+            author = ", ".join(doc.get("author_name", [])[:2]) if doc.get("author_name") else "—"
+            year = doc.get("first_publish_year", "—")
+            isbn = doc.get("isbn", ["—"])[0] if doc.get("isbn") else "—"
+            tree.insert("", "end", iid=str(idx), values=(title, author, year, isbn))
+
+        tree.bind("<Double-1>", lambda *_: self._confirm())
+
+        actions = tk.Frame(self, bg=T["surface"])
+        actions.pack(fill="x", padx=16, pady=(0, 16))
+        tk.Button(
+            actions,
+            text="Отмена",
+            command=self.destroy,
+            bg=T["surface2"],
+            fg=T["muted"],
+            relief="flat",
+            cursor="hand2",
+            font=("Courier New", 10),
+            padx=14,
+            pady=6,
+        ).pack(side="left")
+        tk.Button(
+            actions,
+            text="Выбрать",
+            command=self._confirm,
+            bg=T["accent"],
+            fg="white",
+            relief="flat",
+            cursor="hand2",
+            font=("Courier New", 10, "bold"),
+            padx=14,
+            pady=6,
+        ).pack(side="right")
+
+        if self.docs:
+            first = tree.get_children()[0]
+            tree.selection_set(first)
+            tree.focus(first)
+
+    def _confirm(self):
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showwarning("Выбор книги", "Сначала выберите книгу из списка.", parent=self)
+            return
+        self.selected_doc = self.docs[int(selected[0])]
+        self.destroy()
 
 # ─────────────────────────────────────────────────────────────────
 # ДИАЛОГ: ДОБАВИТЬ / РЕДАКТИРОВАТЬ КНИГУ
@@ -279,12 +514,14 @@ class BookDialog(tk.Toplevel):
         self.book     = dict(book) if book else {}
         self.result   = None
         self._photo   = None  # keep reference
+        self._license_photo = None
+        self._reprint_dates = list(self.book.get("reprint_dates", []))
 
         self.title("Редактировать книгу" if self.editing else "Добавить книгу")
         self.configure(bg=T["surface"])
         self.resizable(True, True)
-        self.geometry("780x680")
-        self.minsize(680, 580)
+        self.geometry("860x760")
+        self.minsize(760, 640)
         self.transient(master)
         self.grab_set()
 
@@ -318,22 +555,34 @@ class BookDialog(tk.Toplevel):
         body = tk.Frame(self, bg=T["surface"])
         body.pack(fill="both", expand=True)
 
-        # LEFT — cover
-        left = tk.Frame(body, bg=T["surface"], width=200)
+        # LEFT — cover / files
+        left = tk.Frame(body, bg=T["surface"], width=230)
         left.pack(side="left", fill="y", padx=20, pady=20)
         left.pack_propagate(False)
 
         tk.Label(left, text="ОБЛОЖКА", bg=T["surface"], fg=T["muted"],
                  font=("Courier New", 9, "bold")).pack(anchor="w")
 
-        self.cover_canvas = tk.Canvas(left, width=160, height=210,
+        self.cover_canvas = tk.Canvas(left, width=180, height=180,
                                       bg=T["surface2"], highlightthickness=1,
                                       highlightbackground=T["border"])
         self.cover_canvas.pack(pady=(6, 8))
         self.cover_canvas.bind("<Button-1>", lambda e: self._pick_cover_file())
         self._draw_cover_placeholder()
 
-        tk.Button(left, text="📁  Выбрать файл", command=self._pick_cover_file,
+        tk.Button(left, text="📁  Загрузить обложку", command=self._pick_cover_file,
+                  bg=T["surface2"], fg=T["text"], relief="flat",
+                  cursor="hand2", font=("Courier New", 9)).pack(fill="x", pady=2)
+
+        tk.Label(left, text="ЛИЦЕНЗИЯ", bg=T["surface"], fg=T["muted"],
+                 font=("Courier New", 9, "bold")).pack(anchor="w", pady=(14, 0))
+        self.license_canvas = tk.Canvas(left, width=180, height=90,
+                                        bg=T["surface2"], highlightthickness=1,
+                                        highlightbackground=T["border"])
+        self.license_canvas.pack(pady=(6, 8))
+        self.license_canvas.bind("<Button-1>", lambda e: self._pick_license_file())
+        self._draw_license_placeholder()
+        tk.Button(left, text="🪪  Загрузить фото лицензии", command=self._pick_license_file,
                   bg=T["surface2"], fg=T["text"], relief="flat",
                   cursor="hand2", font=("Courier New", 9)).pack(fill="x", pady=2)
 
@@ -341,6 +590,8 @@ class BookDialog(tk.Toplevel):
                  bg=T["surface"], fg=T["muted"],
                  font=("Courier New", 8)).pack(anchor="w", pady=(10, 2))
         self.cover_id_var = tk.StringVar(value=self.book.get("cover_id", ""))
+        self.auto_cover_var = tk.BooleanVar(value=True)
+        self.auto_license_var = tk.BooleanVar(value=False)
         e = tk.Entry(left, textvariable=self.cover_id_var,
                      bg=T["surface2"], fg=T["text"],
                      insertbackground=T["text"],
@@ -360,8 +611,21 @@ class BookDialog(tk.Toplevel):
                                    bg=T["accent"], fg="white", relief="flat",
                                    cursor="hand2", font=("Courier New", 9))
         self.fetch_btn.pack(fill="x", pady=(4, 0))
+        checks = tk.Frame(left, bg=T["surface"])
+        checks.pack(fill="x", pady=(6, 0))
+        tk.Checkbutton(checks, text="Автообложка", variable=self.auto_cover_var,
+                       bg=T["surface"], fg=T["text"], selectcolor=T["surface2"],
+                       activebackground=T["surface"], activeforeground=T["text"],
+                       font=("Courier New", 8)).pack(anchor="w")
+        tk.Checkbutton(checks, text="Лицензия = обложка", variable=self.auto_license_var,
+                       bg=T["surface"], fg=T["text"], selectcolor=T["surface2"],
+                       activebackground=T["surface"], activeforeground=T["text"],
+                       font=("Courier New", 8)).pack(anchor="w")
+        self.fetch_progress = ttk.Progressbar(left, mode="indeterminate")
+        self.fetch_progress.pack(fill="x", pady=(6, 0))
+        self.fetch_progress.stop()
         self.fetch_status = tk.Label(left, text="", bg=T["surface"], fg=T["muted"],
-                                     font=("Courier New", 8), wraplength=160, justify="left")
+                                     font=("Courier New", 8), wraplength=180, justify="left")
         self.fetch_status.pack(anchor="w", pady=(4, 0))
 
         # RIGHT — fields (scrollable)
@@ -490,7 +754,27 @@ class BookDialog(tk.Toplevel):
         self._section("④  ДАТЫ")
         g4 = tk.Frame(f, bg=T["surface"]); g4.pack(fill="x"); g4.columnconfigure(0,weight=1); g4.columnconfigure(1,weight=1)
         self._field(g4, "Дата подписи в печать", "sign_date",    0, 0)
-        self._field(g4, "Дата доп. тиража",      "reprint_dates",0, 1)
+        reprint_wrap = tk.Frame(g4, bg=T["surface"])
+        reprint_wrap.grid(row=0, column=1, sticky="ew", padx=(0,12), pady=4)
+        tk.Label(reprint_wrap, text="ДОП. ТИРАЖИ", bg=T["surface"], fg=T["muted"],
+                 font=("Courier New", 8, "bold")).pack(anchor="w")
+        row = tk.Frame(reprint_wrap, bg=T["surface"])
+        row.pack(fill="x", pady=(2,4))
+        self.reprint_date_var = tk.StringVar()
+        tk.Entry(row, textvariable=self.reprint_date_var,
+                 bg=T["surface2"], fg=T["text"], insertbackground=T["text"],
+                 relief="flat", font=("Georgia", 11)).pack(side="left", fill="x", expand=True, ipady=5)
+        tk.Button(row, text="+", command=self._add_reprint_date,
+                  bg=T["accent"], fg="white", relief="flat",
+                  cursor="hand2", font=("Courier New", 10, "bold"), width=3).pack(side="left", padx=(6,0))
+        self.reprint_dates_list = tk.Listbox(reprint_wrap, height=4, bg=T["surface2"], fg=T["text"],
+                                             relief="flat", highlightthickness=0, selectbackground=T["accent"],
+                                             font=("Courier New", 9))
+        self.reprint_dates_list.pack(fill="x")
+        tk.Button(reprint_wrap, text="Удалить выбранную дату", command=self._remove_reprint_date,
+                  bg=T["surface2"], fg=T["muted"], relief="flat",
+                  cursor="hand2", font=("Courier New", 8)).pack(anchor="e", pady=(4,0))
+        self._refresh_reprint_dates_list()
 
         # ⑤ Библиотека
         self._section("⑤  БИБЛИОГРАФИЧЕСКАЯ ССЫЛКА")
@@ -509,6 +793,7 @@ class BookDialog(tk.Toplevel):
     def _update_subgenres(self):
         subs = GENRES.get(self.genre_var.get(), [])
         self.cb_subgenre["values"] = subs
+        self.cb_subgenre.configure(state="readonly" if subs else "disabled")
         if self.subgenre_var.get() not in subs:
             self.subgenre_var.set(subs[0] if subs else "")
 
@@ -520,24 +805,45 @@ class BookDialog(tk.Toplevel):
             if cid:
                 cover_path = str(COVERS_DIR / f"{self.book.get('id','0')}.jpg")
         self._show_cover(cover_path)
+        self._show_license(self.book.get("license_file", ""))
 
     def _draw_cover_placeholder(self):
         self.cover_canvas.delete("all")
-        self.cover_canvas.create_rectangle(0,0,160,210, fill=T["surface2"], outline="")
-        self.cover_canvas.create_text(80, 90, text="📖", font=("Arial", 36), fill=T["muted"])
-        self.cover_canvas.create_text(80, 140, text="Нажмите для\nвыбора файла",
+        self.cover_canvas.create_rectangle(0,0,180,180, fill=T["surface2"], outline="")
+        self.cover_canvas.create_text(90, 72, text="📖", font=("Arial", 36), fill=T["muted"])
+        self.cover_canvas.create_text(90, 122, text="Нажмите для\nвыбора файла",
                                       font=("Courier New", 9), fill=T["muted"], justify="center")
+
+    def _draw_license_placeholder(self):
+        self.license_canvas.delete("all")
+        self.license_canvas.create_rectangle(0,0,180,90, fill=T["surface2"], outline="")
+        self.license_canvas.create_text(90, 28, text="🪪", font=("Arial", 20), fill=T["muted"])
+        self.license_canvas.create_text(90, 60, text="Фото лицензии", font=("Courier New", 9),
+                                        fill=T["muted"], justify="center")
 
     def _show_cover(self, path):
         if not path: return
-        photo = load_cover_image(path, 160, 210)
+        photo = load_cover_image(path, 180, 180)
         if photo:
             self._photo = photo
             self.cover_canvas.delete("all")
-            self.cover_canvas.create_image(80, 105, image=photo)
+            self.cover_canvas.create_image(90, 90, image=photo)
             self.cover_file_path = path
         else:
             self._draw_cover_placeholder()
+
+    def _show_license(self, path):
+        if not path:
+            self._draw_license_placeholder()
+            return
+        photo = load_cover_image(path, 180, 90)
+        if photo:
+            self._license_photo = photo
+            self.license_canvas.delete("all")
+            self.license_canvas.create_image(90, 45, image=photo)
+            self.license_file_path = path
+        else:
+            self._draw_license_placeholder()
 
     def _pick_cover_file(self):
         path = filedialog.askopenfilename(
@@ -548,46 +854,120 @@ class BookDialog(tk.Toplevel):
             self.cover_file_path = path
             self._show_cover(path)
 
+    def _pick_license_file(self):
+        path = filedialog.askopenfilename(
+            title="Выбрать фото лицензии",
+            filetypes=[("Изображения", "*.jpg *.jpeg *.png *.webp"), ("Все файлы", "*")]
+        )
+        if path:
+            self.license_file_path = path
+            self._show_license(path)
+
+    def _refresh_reprint_dates_list(self):
+        self.reprint_dates_list.delete(0, "end")
+        for value in self._reprint_dates:
+            self.reprint_dates_list.insert("end", value)
+
+    def _add_reprint_date(self):
+        value = self.reprint_date_var.get().strip()
+        if not value:
+            return
+        self._reprint_dates.append(value)
+        self.reprint_date_var.set("")
+        self._refresh_reprint_dates_list()
+
+    def _remove_reprint_date(self):
+        sel = self.reprint_dates_list.curselection()
+        if not sel:
+            return
+        del self._reprint_dates[sel[0]]
+        self._refresh_reprint_dates_list()
+
     def _fetch_api(self):
         query = self.api_var.get().strip() or self.vars.get("title", tk.StringVar()).get()
         if not query:
             self.fetch_status.config(text="Введите название для поиска", fg=T["danger"])
             return
         self.fetch_btn.config(state="disabled", text="⏳ Загрузка...")
-        self.fetch_status.config(text="Запрос к Open Library...", fg=T["muted"])
+        self.fetch_progress.start(10)
+        self.fetch_status.config(text="Ищу книги в Open Library...", fg=T["muted"])
 
-        def on_result(doc, err):
-            self.after(0, lambda: self._on_api_result(doc, err))
+        def on_result(docs, err):
+            self.after(0, lambda: self._on_api_results(docs, err))
 
-        fetch_book_info(query, on_result)
+        fetch_book_suggestions(query, on_result)
 
-    def _on_api_result(self, doc, err):
+    def _on_api_results(self, docs, err):
         self.fetch_btn.config(state="normal", text="🌐  Загрузить данные")
-        if err or not doc:
+        self.fetch_progress.stop()
+        if err or not docs:
             self.fetch_status.config(text=f"Не найдено: {err or 'нет результатов'}", fg=T["danger"])
             return
+        dialog = ApiResultsDialog(self, docs)
+        self.wait_window(dialog)
+        if not dialog.selected_doc:
+            self.fetch_status.config(text="Выбор книги отменен", fg=T["muted"])
+            return
+        self._apply_api_doc(dialog.selected_doc)
 
-        # Заполнить поля из API
-        if doc.get("title") and not self.vars["title"].get():
+    def _apply_api_doc(self, doc):
+        # Полностью переносим выбранную запись в форму, но пользователь может дальше вручную править поля.
+        if doc.get("title"):
             self.vars["title"].set(doc["title"])
-        if doc.get("author_name") and not self.vars["author"].get():
+        if doc.get("author_name"):
             self.vars["author"].set(doc["author_name"][0])
-        if doc.get("first_publish_year") and not self.vars["year"].get():
+        if doc.get("first_publish_year"):
             self.vars["year"].set(str(doc["first_publish_year"]))
         if doc.get("isbn"):
             self.vars["isbn"].set(doc["isbn"][0])
         if doc.get("publisher"):
             self.vars["publisher"].set(doc["publisher"][0] if isinstance(doc["publisher"], list) else doc["publisher"])
-        if doc.get("number_of_pages_median"):
-            pass  # нет поля pages в форме напрямую
         if doc.get("ratings_average"):
             self.vars["rating"].set(f"{doc['ratings_average']:.1f}")
 
-        cover_id = str(doc.get("cover_i", ""))
+        cover_id = str(doc.get("cover_i", "")).strip()
         if cover_id:
             self.cover_id_var.set(cover_id)
+            if self.auto_cover_var.get():
+                self._download_cover_preview(cover_id)
 
-        self.fetch_status.config(text="✓ Данные загружены!", fg=T["success"])
+        self.fetch_status.config(
+            text="✓ Данные загружены. При необходимости их можно вручную изменить перед сохранением.",
+            fg=T["success"],
+        )
+
+    def _download_cover_preview(self, cover_id):
+        preview_path = COVERS_DIR / f"preview_{cover_id}.jpg"
+
+        if preview_path.exists():
+            self.cover_file_path = str(preview_path)
+            self._show_cover(str(preview_path))
+            return
+
+        self.fetch_status.config(text="Загружаю обложку...", fg=T["muted"])
+        self.fetch_progress.start(10)
+
+        def on_done(path, err):
+            def update_ui():
+                self.fetch_progress.stop()
+                if path:
+                    self.cover_file_path = path
+                    self._show_cover(path)
+                    if self.auto_license_var.get() and not getattr(self, "license_file_path", ""):
+                        self.license_file_path = path
+                        self._show_license(path)
+                    self.fetch_status.config(
+                        text="✓ Данные и обложка загружены. При необходимости их можно вручную изменить перед сохранением.",
+                        fg=T["success"],
+                    )
+                else:
+                    self.fetch_status.config(
+                        text=f"Данные загружены, но обложку скачать не удалось: {err or 'неизвестная ошибка'}",
+                        fg=T["muted"],
+                    )
+            self.after(0, update_ui)
+
+        download_cover(cover_id, f"preview_{cover_id}", on_done)
 
     def _save(self):
         title  = self.vars["title"].get().strip()
@@ -598,6 +978,7 @@ class BookDialog(tk.Toplevel):
 
         biblio = self._biblio_text.get("1.0", "end").strip()
         cover_file = getattr(self, "cover_file_path", self.book.get("cover_file", ""))
+        license_file = getattr(self, "license_file_path", self.book.get("license_file", ""))
 
         result = {
             "title":         title,
@@ -613,10 +994,11 @@ class BookDialog(tk.Toplevel):
             "rating":        float(self.vars["rating"].get() or 0),
             "age":           self.vars["age"].get(),
             "sign_date":     self.vars["sign_date"].get().strip(),
-            "reprint_dates": [self.vars["reprint_dates"].get().strip()] if self.vars["reprint_dates"].get().strip() else [],
+            "reprint_dates": list(self._reprint_dates),
             "biblio":        biblio,
             "cover_id":      self.cover_id_var.get().strip(),
             "cover_file":    cover_file,
+            "license_file":  license_file,
         }
         if self.editing:
             result["id"] = self.book["id"]
@@ -765,6 +1147,28 @@ class LibraryApp(tk.Tk):
         # Подключаем поиск только после полного построения UI
         self._search_var.trace_add("write", self._on_search)
 
+    def _reload_books(self):
+        save_data(self._data)
+        self._all_books = self._data["books"]
+
+    def _rebuild_ui(self):
+        search_value = self._search_q
+        for child in self.winfo_children():
+            child.destroy()
+        self.configure(bg=T["bg"])
+        self._photos = {}
+        self._configure_styles()
+        self._build_ui()
+        self._refresh_sidebar()
+        self._refresh_cards()
+        self._search_var.trace_add("write", self._on_search)
+        if search_value:
+            self._search_entry.delete(0, "end")
+            self._search_entry.insert(0, search_value)
+            self._search_entry.config(fg=T["text"])
+            self._search_q = search_value
+            self._refresh_cards()
+
     def _configure_styles(self):
         style = ttk.Style(self)
         style.theme_use("clam")
@@ -812,7 +1216,7 @@ class LibraryApp(tk.Tk):
                  relief="flat", font=("Georgia", 12))
         self._search_entry.pack(side="left", ipady=5, padx=6)
         # Placeholder вручную
-        self._search_placeholder = "Поиск по названию или автору..."
+        self._search_placeholder = "Поиск книг по названию или автору..."
         self._search_entry.insert(0, self._search_placeholder)
         self._search_entry.config(fg=T["muted"])
         self._search_entry.bind("<FocusIn>",  self._search_focus_in)
@@ -957,18 +1361,16 @@ class LibraryApp(tk.Tk):
     # ── CARDS REFRESH ───────────────────────────────────────────
 
     def _get_visible_books(self):
-        books = list(self._all_books)
+        books = backend_sort_books(self._sort_key, not self._sort_rev)
         if self._sel_genre:
             books = [b for b in books if b["genre"] == self._sel_genre]
         if self._sel_sub:
             books = [b for b in books if b["subgenre"] == self._sel_sub]
         if self._search_q:
             q = self._search_q.lower()
-            # Приоритет: сначала по названию, потом по автору
             by_title  = [b for b in books if q in b["title"].lower()]
             by_author = [b for b in books if q in b["author"].lower() and b not in by_title]
             books = by_title + by_author
-        books = merge_sort(books, self._sort_key, self._sort_rev)
         return books
 
     def _refresh_cards(self):
@@ -997,19 +1399,22 @@ class LibraryApp(tk.Tk):
 
     def _make_card(self, book):
         card = tk.Frame(self._cards_frame, bg=T["card"], width=CARD_W,
-                        relief="flat", cursor="hand2")
+                        relief="flat", cursor="hand2",
+                        highlightthickness=1, highlightbackground=T["border"], highlightcolor=T["accent"])
         card.pack_propagate(False)
         card.configure(height=CARD_H)
 
         # hover
         def on_enter(e):
             card.config(bg=T["card_hover"])
+            card.config(highlightbackground=T["accent2"])
             for w in card.winfo_children():
                 try: w.config(bg=T["card_hover"])
                 except: pass
             del_btn.place(x=CARD_W-30, y=4)
         def on_leave(e):
             card.config(bg=T["card"])
+            card.config(highlightbackground=T["border"])
             for w in card.winfo_children():
                 try: w.config(bg=T["card"])
                 except: pass
@@ -1031,7 +1436,7 @@ class LibraryApp(tk.Tk):
         photo = None
         if cover_path and os.path.exists(cover_path):
             photo = load_cover_image(cover_path)
-        elif book.get("cover_id"):
+        elif book.get("cover_id") or book.get("cover_url"):
             # Попробовать скачать
             self._try_download_cover(book)
 
@@ -1065,15 +1470,33 @@ class LibraryApp(tk.Tk):
                  font=("Courier New", 8)).pack(anchor="w")
 
         # Title
-        tk.Label(info, text=book["title"],
+        tk.Label(info, text=ellipsize(book["title"], 40),
                  bg=T["card"], fg=T["text"],
                  font=("Georgia", 11, "bold"),
                  wraplength=CARD_W-16, justify="left", anchor="w").pack(anchor="w", pady=(2,0))
 
+        tk.Label(info, text=book.get("author", "Неизвестный автор"),
+                 bg=T["card"], fg=T["muted"],
+                 font=("Georgia", 9),
+                 wraplength=CARD_W-16, justify="left", anchor="w").pack(anchor="w", pady=(1,0))
+
         # Rating stars
-        tk.Label(info, text=stars_text(book.get("rating", 0)),
+        tk.Label(info, text=f"{stars_text(book.get('rating', 0))}  {book.get('rating', 0):.1f}",
                  bg=T["card"], fg="#f59e0b",
-                 font=("Arial", 10)).pack(anchor="w")
+                 font=("Arial", 10)).pack(anchor="w", pady=(2,0))
+
+        tag_text = " · ".join([v for v in [book.get("genre", ""), book.get("subgenre", "")] if v])
+        if tag_text:
+            tk.Label(info, text=tag_text,
+                     bg=T["surface2"], fg=T["accent"],
+                     font=("Courier New", 8, "bold"),
+                     padx=6, pady=3).pack(anchor="w", pady=(4,0))
+
+        if book.get("publisher"):
+            tk.Label(info, text=book["publisher"],
+                     bg=T["card"], fg=T["muted"],
+                     font=("Courier New", 8),
+                     wraplength=CARD_W-16, justify="left", anchor="w").pack(anchor="w", pady=(4,0))
 
         # Price
         if book.get("price"):
@@ -1099,7 +1522,11 @@ class LibraryApp(tk.Tk):
 
         def on_done(path, err):
             if path:
-                self.after(100, self._refresh_cards)
+                updated = dict(book)
+                updated["cover_file"] = path
+                saved = backend_upsert_book(updated, fetch_network=False)
+                if saved:
+                    self.after(100, lambda: (self._reload_books(), self._refresh_sidebar(), self._refresh_cards()))
 
         download_cover(cid, bid, on_done)
 
@@ -1147,7 +1574,7 @@ class LibraryApp(tk.Tk):
         global T
         self._dark = not self._dark
         T = DARK if self._dark else LIGHT
-        messagebox.showinfo("Тема", "Перезапустите приложение для смены темы.\n(Полная поддержка горячей смены — в следующей версии)")
+        self._rebuild_ui()
 
     def _add_book(self):
         BookDialog(self, on_save=self._on_book_saved)
@@ -1156,30 +1583,24 @@ class LibraryApp(tk.Tk):
         BookDialog(self, book=book, on_save=self._on_book_saved)
 
     def _on_book_saved(self, result):
-        if "id" in result:
-            # Edit
-            for i, b in enumerate(self._all_books):
-                if b["id"] == result["id"]:
-                    self._all_books[i] = result; break
-        else:
-            result["id"] = self._data["next_id"]
-            self._data["next_id"] += 1
-            self._all_books.append(result)
-            # Download cover from API if cover_id set
-            if result.get("cover_id"):
-                self._try_download_cover(result)
-        save_data(self._data)
+        saved = backend_upsert_book(result, fetch_network=True)
+        if not saved:
+            messagebox.showerror("Ошибка", "Не удалось сохранить книгу через C++ backend.", parent=self)
+            return
+        if saved.get("cover_id"):
+            self._try_download_cover(saved)
+        self._reload_books()
         self._refresh_sidebar()
         self._refresh_cards()
 
     def _delete_book(self, book_id):
         if messagebox.askyesno("Удалить", "Удалить книгу из базы данных?", parent=self):
-            self._all_books[:] = [b for b in self._all_books if b["id"] != book_id]
+            backend_remove_book(book_id)
             # Remove cover file
             cover = COVERS_DIR / f"{book_id}.jpg"
             if cover.exists():
                 cover.unlink()
-            save_data(self._data)
+            self._reload_books()
             self._refresh_sidebar()
             self._refresh_cards()
 
