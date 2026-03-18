@@ -574,6 +574,8 @@ bool LibraryStorage::upsertBook(Book& book) {
     if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
         return false;
     }
+    return books;
+}
 
     if (book.id == 0) {
         book.id = static_cast<int>(sqlite3_last_insert_rowid(db));
@@ -652,8 +654,19 @@ std::optional<Book> NetworkMetadataClient::fetchByQuery(const Book& draft) const
     return remote;
 }
 
-LibraryBackendService::LibraryBackendService(LibraryStorage storage)
-    : storage_(std::move(storage)) {}
+bool LibraryStorage::removeBookById(int id) {
+    sqlite3* db = static_cast<sqlite3*>(db_);
+    sqlite3_stmt* raw = nullptr;
+    if (sqlite3_prepare_v2(db, "DELETE FROM books WHERE id = ?;", -1, &raw, nullptr) != SQLITE_OK) {
+        return false;
+    }
+    StatementPtr stmt(raw, sqlite3_finalize);
+    sqlite3_bind_int(stmt.get(), 1, id);
+    if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
+        return false;
+    }
+    return sqlite3_changes(db) > 0;
+}
 
 bool LibraryBackendService::initialize() {
     return storage_.open();

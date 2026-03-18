@@ -65,18 +65,6 @@ SORT_FIELDS = [
     ("age",       "Возрастной рейтинг"),
 ]
 
-INITIAL_BOOKS = [
-    {"id": 1,  "title": "Мастер и Маргарита",       "author": "Михаил Булгаков",   "year": 1967, "genre": "Художественная", "subgenre": "Роман",           "rating": 4.9, "price": 590,  "age": "18+", "isbn": "978-5-04-116270-1", "publisher": "Эксмо",            "format": "84x108/32", "edition": 50000, "sign_date": "", "reprint_dates": [], "biblio": "Булгаков М. А. Мастер и Маргарита. — М.: Эксмо, 2023. — 480 с.", "cover_id": "12192618", "cover_file": ""},
-    {"id": 2,  "title": "Преступление и наказание",  "author": "Ф. Достоевский",    "year": 1866, "genre": "Художественная", "subgenre": "Роман",           "rating": 4.7, "price": 450,  "age": "16+", "isbn": "978-5-08-006491-5", "publisher": "Дет. литература", "format": "70x100/16", "edition": 30000, "sign_date": "", "reprint_dates": [], "biblio": "", "cover_id": "8739200",  "cover_file": ""},
-    {"id": 3,  "title": "Краткая история времени",   "author": "Стивен Хокинг",     "year": 1988, "genre": "Научная",        "subgenre": "Физика",          "rating": 4.8, "price": 680,  "age": "12+", "isbn": "978-5-17-077748-3", "publisher": "АСТ",              "format": "70x100/16", "edition": 25000, "sign_date": "", "reprint_dates": [], "biblio": "", "cover_id": "8575708",  "cover_file": ""},
-    {"id": 4,  "title": "Гарри Поттер и фил. камень","author": "Дж. К. Роулинг",    "year": 1997, "genre": "Детская",        "subgenre": "Приключения",     "rating": 4.9, "price": 750,  "age": "6+",  "isbn": "978-5-353-01435-0", "publisher": "Росмэн",           "format": "60x90/16",  "edition": 100000,"sign_date": "", "reprint_dates": [], "biblio": "", "cover_id": "10521270", "cover_file": ""},
-    {"id": 5,  "title": "Чистый код",                "author": "Роберт Мартин",     "year": 2008, "genre": "Техническая",    "subgenre": "Программирование","rating": 4.6, "price": 1200, "age": "0+",  "isbn": "978-5-4461-0960-9", "publisher": "Питер",            "format": "70x100/16", "edition": 15000, "sign_date": "", "reprint_dates": [], "biblio": "", "cover_id": "8950546",  "cover_file": ""},
-    {"id": 6,  "title": "Дюна",                      "author": "Фрэнк Герберт",     "year": 1965, "genre": "Художественная", "subgenre": "Роман",           "rating": 4.8, "price": 820,  "age": "16+", "isbn": "978-5-17-090658-4", "publisher": "АСТ",              "format": "84x108/32", "edition": 40000, "sign_date": "", "reprint_dates": [], "biblio": "", "cover_id": "10521270", "cover_file": ""},
-    {"id": 7,  "title": "1984",                      "author": "Джордж Оруэлл",     "year": 1949, "genre": "Художественная", "subgenre": "Роман",           "rating": 4.7, "price": 420,  "age": "16+", "isbn": "978-5-17-108831-3", "publisher": "АСТ",              "format": "84x108/32", "edition": 60000, "sign_date": "", "reprint_dates": [], "biblio": "", "cover_id": "8575708",  "cover_file": ""},
-    {"id": 8,  "title": "Война и мир",               "author": "Лев Толстой",       "year": 1869, "genre": "Историческая",  "subgenre": "Новое время",     "rating": 4.6, "price": 1100, "age": "12+", "isbn": "978-5-17-119218-3", "publisher": "АСТ",              "format": "84x108/32", "edition": 35000, "sign_date": "", "reprint_dates": [], "biblio": "", "cover_id": "9255566",  "cover_file": ""},
-    {"id": 9,  "title": "Cosmos",                    "author": "Карл Саган",        "year": 1980, "genre": "Научная",        "subgenre": "Астрономия",      "rating": 4.9, "price": 990,  "age": "12+", "isbn": "978-5-17-094029-0", "publisher": "АСТ",              "format": "70x100/8",  "edition": 20000, "sign_date": "", "reprint_dates": [], "biblio": "", "cover_id": "8739290",  "cover_file": ""},
-    {"id": 10, "title": "Имя розы",                  "author": "Умберто Эко",       "year": 1980, "genre": "Историческая",  "subgenre": "Средневековье",   "rating": 4.5, "price": 650,  "age": "16+", "isbn": "978-5-389-01806-7", "publisher": "Азбука",           "format": "84x108/32", "edition": 25000, "sign_date": "", "reprint_dates": [], "biblio": "", "cover_id": "8739248",  "cover_file": ""},
-]
 
 # ─────────────────────────────────────────────────────────────────
 # АЛГОРИТМЫ
@@ -576,6 +564,8 @@ class BookDialog(tk.Toplevel):
                  bg=T["surface"], fg=T["muted"],
                  font=("Courier New", 8)).pack(anchor="w", pady=(10, 2))
         self.cover_id_var = tk.StringVar(value=self.book.get("cover_id", ""))
+        self.auto_cover_var = tk.BooleanVar(value=True)
+        self.auto_license_var = tk.BooleanVar(value=False)
         e = tk.Entry(left, textvariable=self.cover_id_var,
                      bg=T["surface2"], fg=T["text"],
                      insertbackground=T["text"],
@@ -1499,7 +1489,7 @@ class LibraryApp(tk.Tk):
         global T
         self._dark = not self._dark
         T = DARK if self._dark else LIGHT
-        messagebox.showinfo("Тема", "Перезапустите приложение для смены темы.\n(Полная поддержка горячей смены — в следующей версии)")
+        self._rebuild_ui()
 
     def _add_book(self):
         BookDialog(self, on_save=self._on_book_saved)
