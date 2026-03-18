@@ -25,6 +25,12 @@ try:
 except ImportError:
     PIL_OK = False
 
+def ellipsize(text: str, max_length: int) -> str:
+    """Truncate long text and add '...' (used for card titles)."""
+    if len(text) <= max_length:
+        return text
+    return text[:max_length - 3] + "..."
+
 try:
     import urllib.request
     import urllib.parse
@@ -849,6 +855,13 @@ class BookDialog(tk.Toplevel):
         self.license_canvas.create_rectangle(0, 0, 220, 110, fill=T["surface2"], outline="")
         self.license_canvas.create_text(110, 34, text="🪪", font=("Arial", 24), fill=T["muted"])
         self.license_canvas.create_text(110, 76, text="Фото лицензии", font=("Courier New", 10),
+                                        fill=T["muted"], justify="center")
+
+    def _draw_license_placeholder(self):
+        self.license_canvas.delete("all")
+        self.license_canvas.create_rectangle(0,0,180,90, fill=T["surface2"], outline="")
+        self.license_canvas.create_text(90, 28, text="🪪", font=("Arial", 20), fill=T["muted"])
+        self.license_canvas.create_text(90, 60, text="Фото лицензии", font=("Courier New", 9),
                                         fill=T["muted"], justify="center")
 
     def _show_cover(self, path):
