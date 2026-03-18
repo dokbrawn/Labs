@@ -13,6 +13,8 @@ import os
 import threading
 import shutil
 import math
+import subprocess
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -35,6 +37,10 @@ BASE_DIR   = Path(__file__).parent
 DATA_FILE  = BASE_DIR / "library_data.json"
 COVERS_DIR = BASE_DIR / "covers"
 COVERS_DIR.mkdir(exist_ok=True)
+LICENSES_DIR = BASE_DIR / "licenses"
+LICENSES_DIR.mkdir(exist_ok=True)
+BUILD_DIR = BASE_DIR / "build"
+BACKEND_NAME = "library_backend.exe" if os.name == "nt" else "library_backend"
 
 CARD_W, CARD_H = 160, 240
 COVER_W, COVER_H = 160, 120
@@ -158,34 +164,187 @@ def bst_search(root, query):
 # РАБОТА С ДАННЫМИ
 # ─────────────────────────────────────────────────────────────────
 
+def _escape_backend_value(value):
+    value = "" if value is None else str(value)
+    return value.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r").replace("=", "\\=")
+
+
+def resolve_backend_bin():
+    candidates = [
+        BUILD_DIR / BACKEND_NAME,
+        BUILD_DIR / "Debug" / BACKEND_NAME,
+        BUILD_DIR / "Release" / BACKEND_NAME,
+        BUILD_DIR / "RelWithDebInfo" / BACKEND_NAME,
+        BUILD_DIR / "MinSizeRel" / BACKEND_NAME,
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
+def ensure_backend_ready():
+    backend_bin = resolve_backend_bin()
+    if backend_bin.exists():
+        return
+    subprocess.run(["cmake", "-S", str(BASE_DIR), "-B", str(BUILD_DIR)], check=True, cwd=BASE_DIR)
+    build_cmd = ["cmake", "--build", str(BUILD_DIR)]
+    if os.name == "nt":
+        build_cmd.extend(["--config", "Debug"])
+    subprocess.run(build_cmd, check=True, cwd=BASE_DIR)
+
+    backend_bin = resolve_backend_bin()
+    if not backend_bin.exists():
+        raise FileNotFoundError(
+            f"Не удалось найти backend после сборки. Ожидался файл: {backend_bin}"
+        )
+
+
+def _backend_cmd(*args):
+    ensure_backend_ready()
+    backend_bin = resolve_backend_bin()
+    completed = subprocess.run([str(backend_bin), *map(str, args)], cwd=BASE_DIR, text=True, capture_output=True, check=True)
+    return completed.stdout
+
+
+def _parse_backend_books(payload):
+    books = []
+    current = None
+    for raw_line in payload.splitlines():
+        line = raw_line.rstrip("\n")
+        if line == "BEGIN_BOOK":
+            current = {}
+            continue
+        if line == "END_BOOK":
+            if current is not None:
+                books.append(current)
+            current = None
+            continue
+        if current is None or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        value = value.replace("\\n", "\n").replace("\\r", "\r").replace("\\=", "=").replace("\\\\", "\\")
+        current[key] = value
+
+    normalized = []
+    for item in books:
+        cover_url = item.get("cover_url", "")
+        cover_id = ""
+        if "/b/id/" in cover_url:
+            cover_id = cover_url.split("/b/id/")[-1].split("-")[0]
+        normalized.append({
+            "id": int(item.get("id", 0) or 0),
+            "title": item.get("title", ""),
+            "author": item.get("author", ""),
+            "genre": item.get("genre", ""),
+            "subgenre": item.get("subgenre", ""),
+            "publisher": item.get("publisher", ""),
+            "year": int(float(item.get("year", 0) or 0)),
+            "format": item.get("format", ""),
+            "rating": float(item.get("rating", 0) or 0),
+            "price": float(item.get("price", 0) or 0),
+            "age": item.get("age_rating", "0+"),
+            "isbn": item.get("isbn", ""),
+            "edition": int(float(item.get("total_print_run", 0) or 0)),
+            "sign_date": item.get("signed_to_print_date", ""),
+            "reprint_dates": [v for v in item.get("additional_print_dates", "").split("|") if v],
+            "cover_file": item.get("cover_image_path", ""),
+            "license_file": item.get("license_image_path", ""),
+            "biblio": item.get("bibliographic_reference", ""),
+            "cover_url": cover_url,
+            "cover_id": cover_id,
+            "search_frequency": float(item.get("search_frequency", 1) or 1),
+        })
+    return normalized
+
+
+def _book_to_backend_record(book):
+    return {
+        "id": book.get("id", 0),
+        "title": book.get("title", ""),
+        "author": book.get("author", ""),
+        "genre": book.get("genre", ""),
+        "subgenre": book.get("subgenre", ""),
+        "publisher": book.get("publisher", ""),
+        "year": book.get("year", 0),
+        "format": book.get("format", ""),
+        "rating": book.get("rating", 0),
+        "price": book.get("price", 0),
+        "age_rating": book.get("age", "0+"),
+        "isbn": book.get("isbn", ""),
+        "total_print_run": book.get("edition", 0),
+        "signed_to_print_date": book.get("sign_date", ""),
+        "additional_print_dates": "|".join(book.get("reprint_dates", [])),
+        "cover_image_path": book.get("cover_file", ""),
+        "license_image_path": book.get("license_file", ""),
+        "bibliographic_reference": book.get("biblio", ""),
+        "cover_url": book.get("cover_url", ""),
+        "search_frequency": book.get("search_frequency", max(1.0, float(book.get("rating", 0) or 0))),
+    }
+
+
+def backend_list_books():
+    return _parse_backend_books(_backend_cmd("list"))
+
+
+def backend_search_books(query):
+    return _parse_backend_books(_backend_cmd("search", query))
+
+
+def backend_sort_books(field, ascending=True):
+    return _parse_backend_books(_backend_cmd("sort", field, "asc" if ascending else "desc"))
+
+
+def backend_upsert_book(book, fetch_network=True):
+    record = _book_to_backend_record(book)
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, suffix=".book", dir=BASE_DIR) as tmp:
+        tmp.write("BEGIN_BOOK\n")
+        for key, value in record.items():
+            tmp.write(f"{key}={_escape_backend_value(value)}\n")
+        tmp.write("END_BOOK\n")
+        tmp_path = tmp.name
+    try:
+        args = ["upsert", tmp_path]
+        if fetch_network:
+            args.append("--fetch-network")
+        books = _parse_backend_books(_backend_cmd(*args))
+        return books[0] if books else None
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+
+
+def backend_remove_book(book_id):
+    _backend_cmd("remove", str(book_id))
+
+
 def load_data():
-    if DATA_FILE.exists():
-        try:
-            with open(DATA_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    data = {"books": INITIAL_BOOKS, "next_id": len(INITIAL_BOOKS) + 1}
-    save_data(data)
-    return data
+    _backend_cmd("init")
+    books = backend_list_books()
+    if not books:
+        for book in INITIAL_BOOKS:
+            backend_upsert_book(book, fetch_network=False)
+        books = backend_list_books()
+    next_id = max((b["id"] for b in books), default=0) + 1
+    return {"books": books, "next_id": next_id}
+
 
 def save_data(data):
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    data["books"] = backend_list_books()
+    data["next_id"] = max((b["id"] for b in data["books"]), default=0) + 1
 
-def fetch_book_info(query, callback):
-    """Запрос к Open Library API в фоновом потоке"""
+def fetch_book_suggestions(query, callback, limit=10):
+    """Запрос нескольких вариантов книг из Open Library API в фоновом потоке"""
     def run():
         try:
             q = urllib.parse.quote(query)
-            url = f"https://openlibrary.org/search.json?q={q}&limit=1&fields=title,author_name,first_publish_year,isbn,number_of_pages_median,cover_i,publisher,ratings_average"
+            url = f"https://openlibrary.org/search.json?q={q}&limit={int(limit)}&fields=title,author_name,first_publish_year,isbn,number_of_pages_median,cover_i,publisher,ratings_average"
             req = urllib.request.Request(url, headers={"User-Agent": "LibraryDB/1.0"})
             with urllib.request.urlopen(req, timeout=8) as r:
                 data = json.loads(r.read())
             docs = data.get("docs", [])
-            callback(docs[0] if docs else None, None)
+            callback(docs, None)
         except Exception as e:
-            callback(None, str(e))
+            callback([], str(e))
     threading.Thread(target=run, daemon=True).start()
 
 def download_cover(cover_id, book_id, callback):
@@ -266,6 +425,93 @@ def stars_text(rating):
     half  = 1 if (rating - full) >= 0.5 else 0
     empty = 5 - full - half
     return "★" * full + ("½" if half else "") + "☆" * empty
+
+
+class ApiResultsDialog(tk.Toplevel):
+    def __init__(self, master, docs):
+        super().__init__(master)
+        self.docs = docs
+        self.selected_doc = None
+
+        self.title("Выберите книгу из Open Library")
+        self.geometry("760x420")
+        self.minsize(640, 320)
+        self.configure(bg=T["surface"])
+        self.transient(master)
+        self.grab_set()
+
+        self._build()
+
+    def _build(self):
+        tk.Label(
+            self,
+            text="Найденные книги — выберите нужную запись",
+            bg=T["surface"],
+            fg=T["text"],
+            font=("Georgia", 13, "bold"),
+        ).pack(anchor="w", padx=16, pady=(16, 8))
+
+        cols = ("title", "author", "year", "isbn")
+        tree = ttk.Treeview(self, columns=cols, show="headings", height=12)
+        tree.heading("title", text="Название")
+        tree.heading("author", text="Автор")
+        tree.heading("year", text="Год")
+        tree.heading("isbn", text="ISBN")
+        tree.column("title", width=280, anchor="w")
+        tree.column("author", width=180, anchor="w")
+        tree.column("year", width=70, anchor="center")
+        tree.column("isbn", width=180, anchor="w")
+        tree.pack(fill="both", expand=True, padx=16, pady=8)
+        self.tree = tree
+
+        for idx, doc in enumerate(self.docs):
+            title = doc.get("title", "Без названия")
+            author = ", ".join(doc.get("author_name", [])[:2]) if doc.get("author_name") else "—"
+            year = doc.get("first_publish_year", "—")
+            isbn = doc.get("isbn", ["—"])[0] if doc.get("isbn") else "—"
+            tree.insert("", "end", iid=str(idx), values=(title, author, year, isbn))
+
+        tree.bind("<Double-1>", lambda *_: self._confirm())
+
+        actions = tk.Frame(self, bg=T["surface"])
+        actions.pack(fill="x", padx=16, pady=(0, 16))
+        tk.Button(
+            actions,
+            text="Отмена",
+            command=self.destroy,
+            bg=T["surface2"],
+            fg=T["muted"],
+            relief="flat",
+            cursor="hand2",
+            font=("Courier New", 10),
+            padx=14,
+            pady=6,
+        ).pack(side="left")
+        tk.Button(
+            actions,
+            text="Выбрать",
+            command=self._confirm,
+            bg=T["accent"],
+            fg="white",
+            relief="flat",
+            cursor="hand2",
+            font=("Courier New", 10, "bold"),
+            padx=14,
+            pady=6,
+        ).pack(side="right")
+
+        if self.docs:
+            first = tree.get_children()[0]
+            tree.selection_set(first)
+            tree.focus(first)
+
+    def _confirm(self):
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showwarning("Выбор книги", "Сначала выберите книгу из списка.", parent=self)
+            return
+        self.selected_doc = self.docs[int(selected[0])]
+        self.destroy()
 
 # ─────────────────────────────────────────────────────────────────
 # ДИАЛОГ: ДОБАВИТЬ / РЕДАКТИРОВАТЬ КНИГУ
@@ -554,40 +800,48 @@ class BookDialog(tk.Toplevel):
             self.fetch_status.config(text="Введите название для поиска", fg=T["danger"])
             return
         self.fetch_btn.config(state="disabled", text="⏳ Загрузка...")
-        self.fetch_status.config(text="Запрос к Open Library...", fg=T["muted"])
+        self.fetch_status.config(text="Ищу книги в Open Library...", fg=T["muted"])
 
-        def on_result(doc, err):
-            self.after(0, lambda: self._on_api_result(doc, err))
+        def on_result(docs, err):
+            self.after(0, lambda: self._on_api_results(docs, err))
 
-        fetch_book_info(query, on_result)
+        fetch_book_suggestions(query, on_result)
 
-    def _on_api_result(self, doc, err):
+    def _on_api_results(self, docs, err):
         self.fetch_btn.config(state="normal", text="🌐  Загрузить данные")
-        if err or not doc:
+        if err or not docs:
             self.fetch_status.config(text=f"Не найдено: {err or 'нет результатов'}", fg=T["danger"])
             return
+        dialog = ApiResultsDialog(self, docs)
+        self.wait_window(dialog)
+        if not dialog.selected_doc:
+            self.fetch_status.config(text="Выбор книги отменен", fg=T["muted"])
+            return
+        self._apply_api_doc(dialog.selected_doc)
 
-        # Заполнить поля из API
-        if doc.get("title") and not self.vars["title"].get():
+    def _apply_api_doc(self, doc):
+        # Полностью переносим выбранную запись в форму, но пользователь может дальше вручную править поля.
+        if doc.get("title"):
             self.vars["title"].set(doc["title"])
-        if doc.get("author_name") and not self.vars["author"].get():
+        if doc.get("author_name"):
             self.vars["author"].set(doc["author_name"][0])
-        if doc.get("first_publish_year") and not self.vars["year"].get():
+        if doc.get("first_publish_year"):
             self.vars["year"].set(str(doc["first_publish_year"]))
         if doc.get("isbn"):
             self.vars["isbn"].set(doc["isbn"][0])
         if doc.get("publisher"):
             self.vars["publisher"].set(doc["publisher"][0] if isinstance(doc["publisher"], list) else doc["publisher"])
-        if doc.get("number_of_pages_median"):
-            pass  # нет поля pages в форме напрямую
         if doc.get("ratings_average"):
             self.vars["rating"].set(f"{doc['ratings_average']:.1f}")
 
-        cover_id = str(doc.get("cover_i", ""))
+        cover_id = str(doc.get("cover_i", "")).strip()
         if cover_id:
             self.cover_id_var.set(cover_id)
 
-        self.fetch_status.config(text="✓ Данные загружены!", fg=T["success"])
+        self.fetch_status.config(
+            text="✓ Данные загружены. При необходимости их можно вручную изменить перед сохранением.",
+            fg=T["success"],
+        )
 
     def _save(self):
         title  = self.vars["title"].get().strip()
@@ -764,6 +1018,10 @@ class LibraryApp(tk.Tk):
         self._refresh_cards()
         # Подключаем поиск только после полного построения UI
         self._search_var.trace_add("write", self._on_search)
+
+    def _reload_books(self):
+        save_data(self._data)
+        self._all_books = self._data["books"]
 
     def _configure_styles(self):
         style = ttk.Style(self)
@@ -957,18 +1215,16 @@ class LibraryApp(tk.Tk):
     # ── CARDS REFRESH ───────────────────────────────────────────
 
     def _get_visible_books(self):
-        books = list(self._all_books)
+        books = backend_sort_books(self._sort_key, not self._sort_rev)
         if self._sel_genre:
             books = [b for b in books if b["genre"] == self._sel_genre]
         if self._sel_sub:
             books = [b for b in books if b["subgenre"] == self._sel_sub]
         if self._search_q:
             q = self._search_q.lower()
-            # Приоритет: сначала по названию, потом по автору
             by_title  = [b for b in books if q in b["title"].lower()]
             by_author = [b for b in books if q in b["author"].lower() and b not in by_title]
             books = by_title + by_author
-        books = merge_sort(books, self._sort_key, self._sort_rev)
         return books
 
     def _refresh_cards(self):
@@ -1031,7 +1287,7 @@ class LibraryApp(tk.Tk):
         photo = None
         if cover_path and os.path.exists(cover_path):
             photo = load_cover_image(cover_path)
-        elif book.get("cover_id"):
+        elif book.get("cover_id") or book.get("cover_url"):
             # Попробовать скачать
             self._try_download_cover(book)
 
@@ -1099,7 +1355,11 @@ class LibraryApp(tk.Tk):
 
         def on_done(path, err):
             if path:
-                self.after(100, self._refresh_cards)
+                updated = dict(book)
+                updated["cover_file"] = path
+                saved = backend_upsert_book(updated, fetch_network=False)
+                if saved:
+                    self.after(100, lambda: (self._reload_books(), self._refresh_sidebar(), self._refresh_cards()))
 
         download_cover(cid, bid, on_done)
 
@@ -1156,30 +1416,24 @@ class LibraryApp(tk.Tk):
         BookDialog(self, book=book, on_save=self._on_book_saved)
 
     def _on_book_saved(self, result):
-        if "id" in result:
-            # Edit
-            for i, b in enumerate(self._all_books):
-                if b["id"] == result["id"]:
-                    self._all_books[i] = result; break
-        else:
-            result["id"] = self._data["next_id"]
-            self._data["next_id"] += 1
-            self._all_books.append(result)
-            # Download cover from API if cover_id set
-            if result.get("cover_id"):
-                self._try_download_cover(result)
-        save_data(self._data)
+        saved = backend_upsert_book(result, fetch_network=True)
+        if not saved:
+            messagebox.showerror("Ошибка", "Не удалось сохранить книгу через C++ backend.", parent=self)
+            return
+        if saved.get("cover_id"):
+            self._try_download_cover(saved)
+        self._reload_books()
         self._refresh_sidebar()
         self._refresh_cards()
 
     def _delete_book(self, book_id):
         if messagebox.askyesno("Удалить", "Удалить книгу из базы данных?", parent=self):
-            self._all_books[:] = [b for b in self._all_books if b["id"] != book_id]
+            backend_remove_book(book_id)
             # Remove cover file
             cover = COVERS_DIR / f"{book_id}.jpg"
             if cover.exists():
                 cover.unlink()
-            save_data(self._data)
+            self._reload_books()
             self._refresh_sidebar()
             self._refresh_cards()
 
