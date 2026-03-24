@@ -13,11 +13,11 @@
 
 namespace {
 std::string defaultDbPath() {
-    const char* customRoot = std::getenv("LIBRARY_DATA_PATH");
-    if (customRoot != nullptr && std::string(customRoot).size() > 0) {
-        return (std::filesystem::path(customRoot) / "library.db").string();
+    const char* conn = std::getenv("LIBRARY_PG_CONN");
+    if (conn != nullptr && std::string(conn).size() > 0) {
+        return conn;
     }
-    return "data/library.db";
+    return "host=localhost port=5432 dbname=library user=postgres password=postgres";
 }
 
 std::string trim(std::string value) {

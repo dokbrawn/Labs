@@ -5,8 +5,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Поиск SQLite3
-find_package(SQLite3 REQUIRED)
+find_package(PostgreSQL REQUIRED)
 
 add_executable(library_backend
     src/main.cpp
@@ -20,8 +19,8 @@ add_executable(library_backend_console
 
 target_include_directories(library_backend PRIVATE src)
 target_include_directories(library_backend_console PRIVATE src)
-target_link_libraries(library_backend PRIVATE SQLite::SQLite3)
-target_link_libraries(library_backend_console PRIVATE SQLite::SQLite3)
+target_link_libraries(library_backend PRIVATE PostgreSQL::PostgreSQL)
+target_link_libraries(library_backend_console PRIVATE PostgreSQL::PostgreSQL)
 
 set_target_properties(library_backend PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
