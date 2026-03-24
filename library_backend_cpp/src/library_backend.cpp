@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <optional>
@@ -61,6 +62,149 @@ static bool envFlagEnabled(const char* name) {
     std::string s(value);
     std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return s == "1" || s == "true" || s == "yes" || s == "on";
+}
+
+static std::string shellEscape(const std::string& input) {
+    std::string out;
+    out.reserve(input.size() + 2);
+    out.push_back('\'');
+    for (char c : input) {
+        if (c == '\'') {
+            out += "'\\''";
+        } else {
+            out.push_back(c);
+        }
+    }
+    out.push_back('\'');
+    return out;
+}
+
+static std::string urlEncode(const std::string& value) {
+    static const char* HEX = "0123456789ABCDEF";
+    std::string out;
+    out.reserve(value.size() * 3);
+    for (unsigned char c : value) {
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~') {
+            out.push_back(static_cast<char>(c));
+        } else if (c == ' ') {
+            out.push_back('+');
+        } else {
+            out.push_back('%');
+            out.push_back(HEX[c >> 4]);
+            out.push_back(HEX[c & 0x0F]);
+        }
+    }
+    return out;
+}
+
+static std::string readCommandOutput(const std::string& command) {
+#ifdef _WIN32
+    FILE* pipe = _popen(command.c_str(), "r");
+#else
+    FILE* pipe = popen(command.c_str(), "r");
+#endif
+    if (pipe == nullptr) {
+        return {};
+    }
+
+    std::string output;
+    char chunk[512];
+    while (std::fgets(chunk, sizeof(chunk), pipe) != nullptr) {
+        output += chunk;
+    }
+
+#ifdef _WIN32
+    _pclose(pipe);
+#else
+    pclose(pipe);
+#endif
+    return output;
+}
+
+static std::string jsonStringFromArray(const std::string& object, const std::string& key) {
+    const std::string marker = "\"" + key + "\"";
+    const std::size_t keyPos = object.find(marker);
+    if (keyPos == std::string::npos) {
+        return {};
+    }
+    const std::size_t open = object.find('[', keyPos);
+    const std::size_t quote1 = object.find('"', open);
+    const std::size_t quote2 = object.find('"', quote1 + 1);
+    if (open == std::string::npos || quote1 == std::string::npos || quote2 == std::string::npos) {
+        return {};
+    }
+    return object.substr(quote1 + 1, quote2 - quote1 - 1);
+}
+
+static std::string jsonStringField(const std::string& object, const std::string& key) {
+    const std::string marker = "\"" + key + "\"";
+    const std::size_t keyPos = object.find(marker);
+    if (keyPos == std::string::npos) {
+        return {};
+    }
+    const std::size_t quote1 = object.find('"', keyPos + marker.size());
+    const std::size_t quote2 = object.find('"', quote1 + 1);
+    if (quote1 == std::string::npos || quote2 == std::string::npos) {
+        return {};
+    }
+    return object.substr(quote1 + 1, quote2 - quote1 - 1);
+}
+
+static int jsonIntField(const std::string& object, const std::string& key) {
+    const std::string marker = "\"" + key + "\"";
+    const std::size_t keyPos = object.find(marker);
+    if (keyPos == std::string::npos) {
+        return 0;
+    }
+    const std::size_t colon = object.find(':', keyPos + marker.size());
+    if (colon == std::string::npos) {
+        return 0;
+    }
+    std::size_t begin = colon + 1;
+    while (begin < object.size() && std::isspace(static_cast<unsigned char>(object[begin]))) {
+        ++begin;
+    }
+    std::size_t end = begin;
+    while (end < object.size() && std::isdigit(static_cast<unsigned char>(object[end]))) {
+        ++end;
+    }
+    if (begin == end) {
+        return 0;
+    }
+    return std::atoi(object.substr(begin, end - begin).c_str());
+}
+
+static std::vector<std::string> extractDocObjects(const std::string& json) {
+    std::vector<std::string> docs;
+    const std::size_t docsKey = json.find("\"docs\"");
+    if (docsKey == std::string::npos) {
+        return docs;
+    }
+    const std::size_t arrStart = json.find('[', docsKey);
+    if (arrStart == std::string::npos) {
+        return docs;
+    }
+
+    int braces = 0;
+    std::size_t objStart = std::string::npos;
+    for (std::size_t i = arrStart; i < json.size(); ++i) {
+        const char c = json[i];
+        if (c == '{') {
+            if (braces == 0) {
+                objStart = i;
+            }
+            ++braces;
+        } else if (c == '}') {
+            --braces;
+            if (braces == 0 && objStart != std::string::npos) {
+                docs.push_back(json.substr(objStart, i - objStart + 1));
+                objStart = std::string::npos;
+            }
+        } else if (c == ']' && braces == 0) {
+            break;
+        }
+    }
+    return docs;
 }
 
 static std::string trim(const std::string& value) {
@@ -882,6 +1026,54 @@ std::vector<ObstNode> LibraryBackendService::buildOptimalSearchTreeByIsbn() cons
     return nodes;
 }
 
+std::vector<OpenLibraryCandidate> LibraryBackendService::lookupOpenLibrary(const std::string& query, int limit) const {
+    const std::string normalized = trim(query);
+    if (normalized.empty()) {
+        return {};
+    }
+
+    if (limit <= 0) {
+        limit = 1;
+    }
+    if (limit > 50) {
+        limit = 50;
+    }
+
+    const std::string url = "https://openlibrary.org/search.json?q=" + urlEncode(normalized) +
+                            "&limit=" + std::to_string(limit) +
+                            "&fields=title,author_name,first_publish_year,isbn,publisher,cover_i,language";
+    const std::string command = "curl -fsSL --max-time 5 -H 'User-Agent: LibraryBackendCPP/1.0' " + shellEscape(url);
+    const std::string response = readCommandOutput(command);
+    if (response.empty()) {
+        logMessage("WARNING", "OpenLibrary lookup failed for query=" + normalized);
+        return {};
+    }
+
+    std::vector<OpenLibraryCandidate> results;
+    const auto docs = extractDocObjects(response);
+    results.reserve(docs.size());
+
+    for (const auto& doc : docs) {
+        OpenLibraryCandidate candidate;
+        candidate.title = jsonStringField(doc, "title");
+        candidate.author = jsonStringFromArray(doc, "author_name");
+        candidate.publisher = jsonStringFromArray(doc, "publisher");
+        candidate.language = jsonStringFromArray(doc, "language");
+        candidate.isbn = jsonStringFromArray(doc, "isbn");
+        candidate.year = jsonIntField(doc, "first_publish_year");
+
+        const int coverId = jsonIntField(doc, "cover_i");
+        if (coverId > 0) {
+            candidate.coverUrl = "https://covers.openlibrary.org/b/id/" + std::to_string(coverId) + "-L.jpg";
+        }
+
+        if (!candidate.title.empty() || !candidate.author.empty()) {
+            results.push_back(std::move(candidate));
+        }
+    }
+    return results;
+}
+
 SortField LibraryBackendService::parseSortField(const std::string& value) {
     const std::string v = normalize(value);
     if (v == "title") return SortField::Title;
@@ -933,6 +1125,22 @@ std::string serializeBookList(const std::vector<Book>& books) {
         out << "license_image_path=" << escapeValue(book.licenseImagePath) << "\n";
         out << "bibliographic_ref=" << escapeValue(book.bibliographicReference) << "\n";
         out << "END_BOOK\n";
+    }
+    return out.str();
+}
+
+std::string serializeOpenLibraryCandidates(const std::vector<OpenLibraryCandidate>& candidates) {
+    std::ostringstream out;
+    for (const auto& item : candidates) {
+        out << "BEGIN_CANDIDATE\n";
+        out << "title=" << escapeValue(item.title) << "\n";
+        out << "author=" << escapeValue(item.author) << "\n";
+        out << "publisher=" << escapeValue(item.publisher) << "\n";
+        out << "language=" << escapeValue(item.language) << "\n";
+        out << "isbn=" << escapeValue(item.isbn) << "\n";
+        out << "cover_url=" << escapeValue(item.coverUrl) << "\n";
+        out << "year=" << item.year << "\n";
+        out << "END_CANDIDATE\n";
     }
     return out.str();
 }
@@ -995,103 +1203,4 @@ std::optional<Book> parseBookFile(const std::string& filePath) {
     }
 
     return book;
-}
-
-static void printUsage() {
-    std::cout
-        << "Usage:\n"
-        << "  library_backend init\n"
-        << "  library_backend list\n"
-        << "  library_backend search <query>\n"
-        << "  library_backend sort <field> <asc|desc>\n"
-        << "  library_backend remove <id>\n"
-        << "  library_backend upsert <file.book> [--fetch-network]\n";
-}
-
-int main(int argc, char* argv[]) {
-    LibraryBackendService service;
-
-    if (argc < 2) {
-        printUsage();
-        return 1;
-    }
-
-    const std::string command = argv[1];
-
-    if (!service.initialize()) {
-        std::cerr << "Initialization failed\n";
-        return 2;
-    }
-
-    if (command == "init") {
-        std::cout << "OK\n";
-        return 0;
-    }
-
-    if (command == "list") {
-        std::cout << serializeBookList(service.allBooks());
-        return 0;
-    }
-
-    if (command == "search") {
-        if (argc < 3) {
-            std::cerr << "Missing query\n";
-            return 1;
-        }
-        std::cout << serializeBookList(service.searchBooks(argv[2]));
-        return 0;
-    }
-
-    if (command == "sort") {
-        if (argc < 4) {
-            std::cerr << "Missing sort args\n";
-            return 1;
-        }
-        const SortField field = LibraryBackendService::parseSortField(argv[2]);
-        const std::string order = LibraryBackendService::normalize(argv[3]);
-        const bool asc = order != "desc";
-        std::cout << serializeBookList(service.sortedBooks(field, asc));
-        return 0;
-    }
-
-    if (command == "remove") {
-        if (argc < 3) {
-            std::cerr << "Missing id\n";
-            return 1;
-        }
-        const int id = std::atoi(argv[2]);
-        if (!service.removeBookById(id)) {
-            std::cerr << "Remove failed\n";
-            return 3;
-        }
-        std::cout << "OK\n";
-        return 0;
-    }
-
-    if (command == "upsert") {
-        if (argc < 3) {
-            std::cerr << "Missing .book file\n";
-            return 1;
-        }
-
-        auto parsed = parseBookFile(argv[2]);
-        if (!parsed.has_value()) {
-            std::cerr << "Invalid book file\n";
-            return 4;
-        }
-
-        Book book = parsed.value();
-        const bool fetchNetwork = argc >= 4 && std::string(argv[3]) == "--fetch-network";
-
-        if (!service.addOrUpdateBook(book, fetchNetwork)) {
-            std::cerr << "Upsert failed\n";
-            return 5;
-        }
-
-        std::cout << "Book saved with id=" << book.id << "\n";
-        return 0;
-    }
-
-    printUsage();
-    return 1;
 }

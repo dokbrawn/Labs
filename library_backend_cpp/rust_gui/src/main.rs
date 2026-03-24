@@ -60,6 +60,17 @@ impl SortField {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+struct OpenLibraryDoc {
+    title: String,
+    author: String,
+    first_publish_year: i32,
+    isbn: String,
+    publisher: String,
+    language: String,
+    cover_url: String,
+}
+
 struct LibraryGui {
     pg_conn: String,
     books: Vec<Book>,
@@ -86,13 +97,18 @@ struct LibraryGui {
     add_print_sign_date: String,
     add_additional_prints: String,
     add_license_image_path: String,
+
+    api_search_query: String,
+    api_results: Vec<OpenLibraryDoc>,
+    show_api_results: bool,
 }
 
 impl Default for LibraryGui {
     fn default() -> Self {
         Self {
-            pg_conn: env::var("LIBRARY_PG_CONN")
-                .unwrap_or_else(|_| "host=localhost port=5432 dbname=library user=postgres password=123".to_string()),
+            pg_conn: env::var("LIBRARY_PG_CONN").unwrap_or_else(|_| {
+                "host=localhost port=5432 dbname=library user=postgres password=123".to_string()
+            }),
             books: Vec::new(),
             shown_books: Vec::new(),
             status: "Нажмите Init + Refresh".to_string(),
@@ -117,6 +133,9 @@ impl Default for LibraryGui {
             add_print_sign_date: String::new(),
             add_additional_prints: "[]".to_string(),
             add_license_image_path: String::new(),
+            api_search_query: String::new(),
+            api_results: Vec::new(),
+            show_api_results: false,
         }
     }
 }
@@ -157,7 +176,8 @@ fn run_backend(pg_conn: &str, args: &[&str]) -> Result<String, String> {
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
-    if !output.status.success() && !stderr.contains("NOTICE") && !stderr.contains("ЗАМЕЧАНИЕ") {
+    if !output.status.success() && !stderr.contains("NOTICE") && !stderr.contains("ЗАМЕЧАНИЕ")
+    {
         Err(stderr)
     } else {
         Ok(stdout)
@@ -188,8 +208,12 @@ fn parse_books(payload: &str) -> Vec<Book> {
             continue;
         }
 
-        let Some(book) = current.as_mut() else { continue };
-        let Some((k, v)) = line.split_once('=') else { continue };
+        let Some(book) = current.as_mut() else {
+            continue;
+        };
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
 
         let value = decode(v);
 
@@ -274,6 +298,44 @@ fn write_book_file(gui: &LibraryGui) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+fn parse_openlibrary_candidates(payload: &str) -> Vec<OpenLibraryDoc> {
+    let mut docs = Vec::new();
+    let mut current: Option<OpenLibraryDoc> = None;
+
+    for line in payload.lines() {
+        if line == "BEGIN_CANDIDATE" {
+            current = Some(OpenLibraryDoc::default());
+            continue;
+        }
+        if line == "END_CANDIDATE" {
+            if let Some(doc) = current.take() {
+                docs.push(doc);
+            }
+            continue;
+        }
+
+        let Some(doc) = current.as_mut() else {
+            continue;
+        };
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let value = decode(value);
+        match key {
+            "title" => doc.title = value,
+            "author" => doc.author = value,
+            "publisher" => doc.publisher = value,
+            "language" => doc.language = value,
+            "isbn" => doc.isbn = value,
+            "cover_url" => doc.cover_url = value,
+            "year" => doc.first_publish_year = value.parse().unwrap_or(0),
+            _ => {}
+        }
+    }
+
+    docs
+}
+
 impl LibraryGui {
     fn init_backend(&mut self) {
         match run_backend(&self.pg_conn, &["init"]) {
@@ -337,7 +399,10 @@ impl LibraryGui {
     fn sort_books_via_backend(&mut self) {
         let order = if self.sort_asc { "asc" } else { "desc" };
 
-        match run_backend(&self.pg_conn, &["sort", self.sort_field.backend_name(), order]) {
+        match run_backend(
+            &self.pg_conn,
+            &["sort", self.sort_field.backend_name(), order],
+        ) {
             Ok(out) => {
                 let mut sorted = parse_books(&out);
 
@@ -411,6 +476,66 @@ impl LibraryGui {
             }
             Err(e) => self.status = format!("Ошибка добавления: {}", e.trim()),
         }
+    }
+
+    fn search_books_in_openlibrary(&mut self) {
+        let query = self.api_search_query.trim();
+        if query.is_empty() {
+            self.status = "Введите запрос для OpenLibrary".to_string();
+            return;
+        }
+
+        match run_backend(&self.pg_conn, &["lookup", query, "15"]) {
+            Ok(payload) => {
+                self.api_results = parse_openlibrary_candidates(&payload);
+                self.show_api_results = true;
+                if self.api_results.is_empty() {
+                    self.status = "По API ничего не найдено".to_string();
+                } else {
+                    self.status = format!(
+                        "Найдено {} вариантов из OpenLibrary",
+                        self.api_results.len()
+                    );
+                }
+            }
+            Err(error) => {
+                self.status = format!("Поиск в OpenLibrary не удался: {error}");
+                self.api_results.clear();
+                self.show_api_results = false;
+            }
+        }
+    }
+
+    fn apply_openlibrary_doc(&mut self, doc: &OpenLibraryDoc) {
+        if !doc.title.trim().is_empty() {
+            self.add_title = doc.title.clone();
+        }
+
+        if !doc.author.trim().is_empty() {
+            self.add_author = doc.author.clone();
+        }
+
+        if doc.first_publish_year > 0 {
+            self.add_year = doc.first_publish_year.to_string();
+        }
+
+        if !doc.isbn.trim().is_empty() {
+            self.add_isbn = doc.isbn.clone();
+        }
+
+        if !doc.publisher.trim().is_empty() {
+            self.add_publisher = doc.publisher.clone();
+        }
+
+        if !doc.cover_url.trim().is_empty() {
+            self.add_license_image_path = doc.cover_url.clone();
+        }
+
+        if self.add_format.trim().is_empty() {
+            self.add_format = "Печатная книга".to_string();
+        }
+
+        self.status = "Данные из OpenLibrary перенесены в форму".to_string();
     }
 
     fn remove_book(&mut self, id: i32) {
@@ -498,7 +623,10 @@ impl App for LibraryGui {
                     .selected_text(&self.selected_subgenre)
                     .show_ui(ui, |ui| {
                         for sg in self.subgenres() {
-                            if ui.selectable_label(self.selected_subgenre == sg, &sg).clicked() {
+                            if ui
+                                .selectable_label(self.selected_subgenre == sg, &sg)
+                                .clicked()
+                            {
                                 self.selected_subgenre = sg;
                                 self.apply_filters_local();
                             }
@@ -523,7 +651,10 @@ impl App for LibraryGui {
                             SortField::Rating,
                             SortField::Price,
                         ] {
-                            if ui.selectable_label(self.sort_field == f, f.label()).clicked() {
+                            if ui
+                                .selectable_label(self.sort_field == f, f.label())
+                                .clicked()
+                            {
                                 self.sort_field = f;
                                 self.apply_filters_local();
                             }
@@ -543,6 +674,20 @@ impl App for LibraryGui {
 
                 ui.separator();
                 ui.heading("Добавить книгу");
+
+                ui.horizontal(|ui| {
+                    ui.label("Поиск в OpenLibrary");
+                    let changed = ui
+                        .text_edit_singleline(&mut self.api_search_query)
+                        .changed();
+                    if ui.button("🔎 Найти").clicked()
+                        || (changed && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+                    {
+                        self.search_books_in_openlibrary();
+                    }
+                });
+                ui.label("Введите слово/фразу → Найти → выберите книгу из списка");
+                ui.separator();
 
                 ui.text_edit_singleline(&mut self.add_title);
                 ui.label("Название");
@@ -593,6 +738,65 @@ impl App for LibraryGui {
                     self.add_book();
                 }
             });
+
+        if self.show_api_results {
+            egui::Window::new("Результаты OpenLibrary")
+                .collapsible(false)
+                .resizable(true)
+                .default_size([760.0, 420.0])
+                .open(&mut self.show_api_results)
+                .show(ctx, |ui| {
+                    ui.label("Выберите подходящую книгу — поля формы заполнятся автоматически.");
+                    ui.separator();
+
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        for doc in self.api_results.clone() {
+                            let authors = if doc.author.trim().is_empty() {
+                                "Неизвестный автор".to_string()
+                            } else {
+                                doc.author.clone()
+                            };
+
+                            let year = if doc.first_publish_year > 0 {
+                                doc.first_publish_year.to_string()
+                            } else {
+                                "—".to_string()
+                            };
+
+                            let language = if doc.language.trim().is_empty() {
+                                "—".to_string()
+                            } else {
+                                doc.language.clone()
+                            };
+
+                            ui.group(|ui| {
+                                ui.horizontal(|ui| {
+                                    ui.vertical(|ui| {
+                                        ui.label(egui::RichText::new(&doc.title).strong());
+                                        ui.label(format!("Автор: {authors}"));
+                                        ui.label(format!("Год: {year}"));
+                                        ui.label(format!("Язык: {language}"));
+                                        if !doc.isbn.trim().is_empty() {
+                                            ui.label(format!("ISBN: {}", doc.isbn));
+                                        }
+                                    });
+
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if ui.button("Выбрать").clicked() {
+                                                self.apply_openlibrary_doc(&doc);
+                                                self.show_api_results = false;
+                                            }
+                                        },
+                                    );
+                                });
+                            });
+                            ui.add_space(8.0);
+                        }
+                    });
+                });
+        }
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading(format!("Книги ({})", self.shown_books.len()));
