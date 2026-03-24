@@ -1,7 +1,8 @@
 [package]
-name = "library_gui_rust"
-version = "0.1.0"
+name = "library_gui"
+version = "1.0.0"
 edition = "2021"
 
 [dependencies]
 eframe = "0.33"
+egui = "0.33"
