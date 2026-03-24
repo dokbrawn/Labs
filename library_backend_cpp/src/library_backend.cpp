@@ -20,6 +20,8 @@
 
 #include <libpq-fe.h>
 
+#include <sqlite3.h>
+
 #ifdef _WIN32
 #define popen _popen
 #define pclose _pclose
@@ -325,6 +327,12 @@ std::vector<Book> runSelectBooks(PGconn* conn, const std::string& sql, const std
     for (const auto& p : params) {
         values.push_back(p.c_str());
     }
+    StatementPtr stmt(raw);
+    while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
+        books.push_back(readBookFromStatement(stmt.get()));
+    }
+    return books;
+}
 
     PGresult* result = PQexecParams(
         conn,
@@ -698,6 +706,8 @@ std::optional<Book> NetworkMetadataClient::fetchByQuery(const Book& draft) const
     if (httpCode != 200 || response.empty()) {
         return std::nullopt;
     }
+    return true;
+}
 
     Book remote;
     remote.title = jsonStringField(response, "title");
@@ -962,6 +972,74 @@ std::string serializeBookList(const std::vector<Book>& books) {
         out << "END_BOOK\n";
     }
     return out.str();
+}
+
+std::optional<Book> parseBookFile(const std::string& filePath) {
+    std::ifstream input(filePath);
+    if (!input.good()) {
+        return std::nullopt;
+    }
+
+    Book book;
+    std::string line;
+    while (std::getline(input, line)) {
+        if (line.empty() || line == "BEGIN_BOOK" || line == "END_BOOK") {
+            continue;
+        }
+        const auto pos = line.find('=');
+        if (pos == std::string::npos) {
+            continue;
+        }
+        const std::string key = trim(line.substr(0, pos));
+        const std::string value = unescapeText(line.substr(pos + 1));
+
+        if (key == "id") {
+            book.id = std::atoi(value.c_str());
+        } else if (key == "title") {
+            book.title = value;
+        } else if (key == "author") {
+            book.author = value;
+        } else if (key == "genre") {
+            book.genre = value;
+        } else if (key == "subgenre") {
+            book.subgenre = value;
+        } else if (key == "publisher") {
+            book.publisher = value;
+        } else if (key == "year") {
+            book.year = std::atoi(value.c_str());
+        } else if (key == "format") {
+            book.format = value;
+        } else if (key == "rating") {
+            book.rating = std::atof(value.c_str());
+        } else if (key == "price") {
+            book.price = std::atof(value.c_str());
+        } else if (key == "age_rating") {
+            book.ageRating = value;
+        } else if (key == "isbn") {
+            book.isbn = value;
+        } else if (key == "total_print_run") {
+            book.totalPrintRun = std::atoll(value.c_str());
+        } else if (key == "signed_to_print_date") {
+            book.signedToPrintDate = value;
+        } else if (key == "additional_print_dates") {
+            book.additionalPrintDates = split(value, '|');
+        } else if (key == "cover_image_path") {
+            book.coverImagePath = value;
+        } else if (key == "license_image_path") {
+            book.licenseImagePath = value;
+        } else if (key == "bibliographic_reference") {
+            book.bibliographicReference = value;
+        } else if (key == "cover_url") {
+            book.coverUrl = value;
+        } else if (key == "search_frequency") {
+            book.searchFrequency = std::atof(value.c_str());
+        }
+    }
+
+    if (trim(book.title).empty() && trim(book.author).empty()) {
+        return std::nullopt;
+    }
+    return book;
 }
 
 std::optional<Book> parseBookFile(const std::string& filePath) {
