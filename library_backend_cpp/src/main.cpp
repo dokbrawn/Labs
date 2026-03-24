@@ -1,52 +1,131 @@
 #include "library_backend.h"
 
+#include <filesystem>
+#include <fstream>
+#include <cstdlib>
 #include <iostream>
+#include <string>
+#include <vector>
 
 namespace {
-Book demoBook() {
-    Book book;
-    book.id = "book-demo";
-    book.title = "Clean Code";
-    book.author = "Robert C. Martin";
-    book.genre = "Software";
-    book.subgenre = "Engineering";
-    book.year = 2008;
-    book.format = "Hardcover";
-    book.rating = 4.7;
-    book.price = 34.99;
-    book.ageRating = "16+";
-    book.isbn = "9780132350884";
-    book.totalPrintRun = 1000000;
-    book.signedToPrintDate = "2008-08-01";
-    book.additionalPrintDates = {"2010-01-15", "2015-06-20"};
-    book.coverImagePath = "data/covers/9780132350884.jpg";
-    book.licenseImagePath = "data/licenses/9780132350884.jpg";
-    book.bibliographicReference = "Martin, R. C. Clean Code. Prentice Hall, 2008.";
-    book.searchFrequency = 10.0;
-    return book;
+std::string defaultPgConn() {
+    const char* conn = std::getenv("LIBRARY_PG_CONN");
+    if (conn != nullptr && std::string(conn).size() > 0) {
+        return conn;
+    }
+    return "host=localhost port=5432 dbname=library user=postgres password=postgres";
+}
+
+void printUsage() {
+    std::cout
+        << "Usage:\n"
+        << "  library_backend init\n"
+        << "  library_backend list\n"
+        << "  library_backend search <query>\n"
+        << "  library_backend sort <field> <asc|desc>\n"
+        << "  library_backend upsert <book_file> [--fetch-network]\n"
+        << "  library_backend remove <id>\n"
+        << "  library_backend obst\n";
+}
+
+bool fileExists(const std::string& path) {
+    return std::filesystem::exists(path);
 }
 } // namespace
 
-int main() {
-    LibraryStorage storage("data/library.tsv");
+int main(int argc, char* argv[]) {
+    LibraryStorage storage(defaultPgConn());
     LibraryBackendService service(std::move(storage));
-
     if (!service.initialize()) {
-        std::cerr << "Не удалось инициализировать хранилище\n";
+        std::cerr << "error=failed_to_initialize\n";
         return 1;
     }
 
-    if (service.allBooks().empty()) {
-        service.addBook(demoBook(), false);
+    if (argc < 2) {
+        printUsage();
+        return 1;
     }
 
-    std::cout << "Всего книг: " << service.allBooks().size() << "\n";
+    const std::string command = argv[1];
 
-    const auto found = service.searchBooks("clean");
-    std::cout << "Найдено по запросу 'clean': " << found.size() << "\n";
+    if (command == "init") {
+        std::cout << "status=ok\n";
+        return 0;
+    }
 
-    const auto obst = service.buildOptimalSearchTreeByIsbn();
-    std::cout << "Узлов в optimal BST: " << obst.size() << "\n";
+    if (command == "list") {
+        std::cout << serializeBookList(service.allBooks());
+        return 0;
+    }
 
-    return 0;
+    if (command == "search") {
+        if (argc < 3) {
+            std::cerr << "error=missing_query\n";
+            return 1;
+        }
+        std::cout << serializeBookList(service.searchBooks(argv[2]));
+        return 0;
+    }
+
+    if (command == "sort") {
+        if (argc < 4) {
+            std::cerr << "error=missing_sort_arguments\n";
+            return 1;
+        }
+        const SortField field = LibraryBackendService::parseSortField(argv[2]);
+        const std::string direction = argv[3];
+        const bool ascending = direction != "desc" && direction != "DESC";
+        std::cout << serializeBookList(service.sortedBooks(field, ascending));
+        return 0;
+    }
+
+    if (command == "upsert") {
+        if (argc < 3 || !fileExists(argv[2])) {
+            std::cerr << "error=missing_book_file\n";
+            return 1;
+        }
+        const auto book = parseBookFile(argv[2]);
+        if (!book.has_value()) {
+            std::cerr << "error=invalid_book_file\n";
+            return 1;
+        }
+        bool fetchNetwork = false;
+        for (int i = 3; i < argc; ++i) {
+            if (std::string(argv[i]) == "--fetch-network") {
+                fetchNetwork = true;
+            }
+        }
+        Book mutableBook = *book;
+        if (!service.addOrUpdateBook(mutableBook, fetchNetwork)) {
+            std::cerr << "error=upsert_failed\n";
+            return 1;
+        }
+        std::cout << "status=ok\n" << serializeBookList({mutableBook});
+        return 0;
+    }
+
+    if (command == "remove") {
+        if (argc < 3) {
+            std::cerr << "error=missing_id\n";
+            return 1;
+        }
+        if (!service.removeBookById(std::stoi(argv[2]))) {
+            std::cerr << "error=remove_failed\n";
+            return 1;
+        }
+        std::cout << "status=ok\n";
+        return 0;
+    }
+
+    if (command == "obst") {
+        const auto nodes = service.buildOptimalSearchTreeByIsbn();
+        for (const auto& node : nodes) {
+            std::cout << "key=" << node.key << ",book_id=" << node.bookId
+                      << ",left=" << node.left << ",right=" << node.right << "\n";
+        }
+        return 0;
+    }
+
+    printUsage();
+    return 1;
 }
