@@ -1,775 +1,843 @@
 #include "library_backend.h"
+
 #include <algorithm>
-#include <array>
-#include <cctype>
 #include <chrono>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
-#include <functional>
 #include <iomanip>
-#include <libpq-fe.h>
-#include <limits>
-#include <map>
+#include <iostream>
+#include <optional>
+#include <set>
 #include <sstream>
 #include <string>
 #include <thread>
+#include <vector>
 
+#include <libpq-fe.h>
+
+namespace fs = std::filesystem;
+
+static const char* LOG_FILE_NAME = "library.log";
+static const char* IMAGES_DIR_NAME = "images";
+
+static std::string nowTimestamp() {
+    const auto now = std::chrono::system_clock::now();
+    const std::time_t t = std::chrono::system_clock::to_time_t(now);
+    std::tm tm{};
 #ifdef _WIN32
-#define popen _popen
-#define pclose _pclose
-#endif
-
-namespace {
-
-std::filesystem::path dataRootPath() {
-    const char* root = std::getenv("LIBRARY_DATA_PATH");
-    if (root != nullptr && std::string(root).size() > 0) {
-        return std::filesystem::path(root);
-    }
-    return std::filesystem::current_path();
-}
-
-std::filesystem::path logFilePath() {
-    return dataRootPath() / "library.log";
-}
-
-void ensureLocalArtifacts() {
-    const auto root = dataRootPath();
-    std::filesystem::create_directories(root);
-    std::filesystem::create_directories(root / "images");
-}
-
-std::string trim(const std::string& value) {
-    const auto begin = value.find_first_not_of(" \t\r\n");
-    if (begin == std::string::npos) return {};
-    const auto end = value.find_last_not_of(" \t\r\n");
-    return value.substr(begin, end - begin + 1);
-}
-
-void appendLog(const std::string& level, const std::string& message) {
-    try {
-        ensureLocalArtifacts();
-        std::ofstream out(logFilePath(), std::ios::app);
-        if (!out) return;
-        
-        const auto now = std::chrono::system_clock::now();
-        const std::time_t t = std::chrono::system_clock::to_time_t(now);
-        std::tm tm{};
-#ifdef _WIN32
-        localtime_s(&tm, &t);
+    localtime_s(&tm, &t);
 #else
-        localtime_r(&t, &tm);
+    localtime_r(&t, &tm);
 #endif
-        out << std::put_time(&tm, "%Y-%m-%d %H:%M:%S")
-            << " [" << level << "] " << message << "\n";
-        out.flush();
-    } catch (...) {}
+    std::ostringstream out;
+    out << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
+    return out.str();
 }
 
-std::string readCommandOutput(const std::string& command) {
-    appendLog("DEBUG", "Executing command: " + command);
-    
-    std::array<char, 1024> buffer{};
-    std::string result;
-    FILE* pipe = popen(command.c_str(), "r");
-    if (!pipe) {
-        appendLog("ERROR", "popen failed for command");
-        return {};
+static void logMessage(const std::string& level, const std::string& text) {
+    std::ofstream log(LOG_FILE_NAME, std::ios::app);
+    if (!log.is_open()) {
+        return;
     }
-    
-    while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe) != nullptr) {
-        result += buffer.data();
-    }
-    
-    int code = pclose(pipe);
-    appendLog("DEBUG", "Command exit code: " + std::to_string(code));
-    
-    return result;
+    log << nowTimestamp() << " [" << level << "] " << text << "\n";
 }
 
-// ИСПРАВЛЕНО: Правильное экранирование для Windows PowerShell
-std::string shellEscape(const std::string& value) {
-    // Для PowerShell используем двойные кавычки с экранированием
-    std::string escaped = "\"";
-    for (char c : value) {
-        if (c == '"') {
-            escaped += "\\\"";
-        } else if (c == '\\') {
-            escaped += "\\\\";
-        } else if (c == '$') {
-            escaped += "`$";  // PowerShell escape
-        } else if (c == '`') {
-            escaped += "``";  // PowerShell escape
+static std::string getEnvOrDefault(const char* name, const std::string& fallback) {
+    const char* value = std::getenv(name);
+    if (value == nullptr || std::string(value).empty()) {
+        return fallback;
+    }
+    return std::string(value);
+}
+
+static bool envFlagEnabled(const char* name) {
+    const char* value = std::getenv(name);
+    if (!value) {
+        return false;
+    }
+    std::string s(value);
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return s == "1" || s == "true" || s == "yes" || s == "on";
+}
+
+static std::string trim(const std::string& value) {
+    std::size_t start = 0;
+    while (start < value.size() && std::isspace(static_cast<unsigned char>(value[start]))) {
+        ++start;
+    }
+    std::size_t end = value.size();
+    while (end > start && std::isspace(static_cast<unsigned char>(value[end - 1]))) {
+        --end;
+    }
+    return value.substr(start, end - start);
+}
+
+static std::string normalizeLower(const std::string& value) {
+    std::string out = trim(value);
+    std::transform(out.begin(), out.end(), out.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return out;
+}
+
+static std::string sqlEscape(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() * 2);
+    for (char c : s) {
+        if (c == '\'') {
+            out += "''";
         } else {
-            escaped.push_back(c);
+            out += c;
         }
     }
-    escaped.push_back('"');
-    return escaped;
+    return out;
 }
 
-std::string jsonStringField(const std::string& json, const std::string& field) {
-    const std::string key = "\"" + field + "\"";
-    const auto pos = json.find(key);
-    if (pos == std::string::npos) return {};
-    
-    const auto colon = json.find(':', pos + key.size());
-    if (colon == std::string::npos) return {};
-    
-    const auto firstQuote = json.find('"', colon + 1);
-    if (firstQuote == std::string::npos) return {};
-    
-    std::string value;
-    bool escaped = false;
-    for (std::size_t i = firstQuote + 1; i < json.size(); ++i) {
-        const char c = json[i];
-        if (escaped) { value.push_back(c); escaped = false; continue; }
-        if (c == '\\') { escaped = true; continue; }
-        if (c == '"') return value;
-        value.push_back(c);
+static std::string escapeValue(const std::string& s) {
+    std::string out;
+    for (char c : s) {
+        if (c == '\\') out += "\\\\";
+        else if (c == '\n') out += "\\n";
+        else if (c == '\r') out += "\\r";
+        else if (c == '=') out += "\\=";
+        else out += c;
     }
-    return {};
+    return out;
 }
 
-int jsonIntegerField(const std::string& json, const std::string& field) {
-    const std::string key = "\"" + field + "\"";
-    const auto pos = json.find(key);
-    if (pos == std::string::npos) return 0;
-    
-    const auto colon = json.find(':', pos + key.size());
-    if (colon == std::string::npos) return 0;
-    
-    std::size_t idx = colon + 1;
-    while (idx < json.size() && std::isspace(static_cast<unsigned char>(json[idx]))) ++idx;
-    
-    std::size_t end = idx;
-    while (end < json.size() && (std::isdigit(static_cast<unsigned char>(json[end])) || json[end] == '-')) ++end;
-    
-    return std::atoi(json.substr(idx, end - idx).c_str());
+static std::string unescapeValue(const std::string& s) {
+    std::string out;
+    for (std::size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == '\\' && i + 1 < s.size()) {
+            const char n = s[i + 1];
+            if (n == 'n') {
+                out += '\n';
+                ++i;
+            } else if (n == 'r') {
+                out += '\r';
+                ++i;
+            } else if (n == '=') {
+                out += '=';
+                ++i;
+            } else if (n == '\\') {
+                out += '\\';
+                ++i;
+            } else {
+                out += s[i];
+            }
+        } else {
+            out += s[i];
+        }
+    }
+    return out;
 }
 
-bool isNetworkEnabled() {
-    const char* offline = std::getenv("OFFLINE_MODE");
-    const char* net = std::getenv("LIBRARY_ENABLE_NET");
-    
-    if (offline && (std::string(offline) == "1" || std::string(offline) == "true")) return false;
-    if (net && (std::string(net) == "0" || std::string(net) == "false")) return false;
-    
-    return true;
+static bool fileExists(const std::string& path) {
+    if (path.empty()) {
+        return false;
+    }
+    std::error_code ec;
+    return fs::exists(path, ec);
 }
 
-std::string defaultPgConn() {
-    const char* conn = std::getenv("LIBRARY_PG_CONN");
-    if (conn != nullptr && std::string(conn).size() > 0) return conn;
-    return "host=localhost port=5432 dbname=library user=postgres password=123";
+static bool deleteFileIfExists(const std::string& path) {
+    if (path.empty()) {
+        return true;
+    }
+    std::error_code ec;
+    if (!fs::exists(path, ec)) {
+        return true;
+    }
+    return fs::remove(path, ec);
 }
 
-bool pgOk(PGresult* result) {
-    const auto status = PQresultStatus(result);
-    return status == PGRES_COMMAND_OK || status == PGRES_TUPLES_OK;
+static void ensureImagesDir() {
+    std::error_code ec;
+    if (!fs::exists(IMAGES_DIR_NAME, ec)) {
+        fs::create_directories(IMAGES_DIR_NAME, ec);
+    }
 }
 
-void ignorePgNotice(void*, const char*) {}
-
-std::string nullToEmpty(const char* value) {
-    return value == nullptr ? std::string{} : std::string(value);
-}
-
-Book rowToBook(PGresult* result, int row) {
+Book LibraryStorage::readBookFromStatement(void* stmtPtr) {
+    PGresult* result = static_cast<PGresult*>(stmtPtr);
     Book book;
-    auto val = [&](int col) -> std::string {
-        if (PQgetisnull(result, row, col) != 0) return {};
-        return nullToEmpty(PQgetvalue(result, row, col));
-    };
-    
-    book.id = std::atoi(val(0).c_str());
-    book.title = val(1);
-    book.author = val(2);
-    book.genre = val(3);
-    book.subgenre = val(4);
-    book.publisher = val(5);
-    book.year = std::atoi(val(6).c_str());
-    book.format = val(7);
-    book.rating = std::atof(val(8).c_str());
-    book.price = std::atof(val(9).c_str());
-    book.ageRating = val(10);
-    book.isbn = val(11);
-    book.totalPrintRun = std::atoll(val(12).c_str());
-    book.signedToPrintDate = val(13);
-    
-    std::string dates = val(14);
-    if (!dates.empty()) {
-        std::stringstream ss(dates);
-        std::string item;
-        while (std::getline(ss, item, '|')) {
-            if (!item.empty()) book.additionalPrintDates.push_back(item);
-        }
+    if (!result || PQntuples(result) <= 0) {
+        return book;
     }
-    
-    book.coverImagePath = val(15);
-    book.licenseImagePath = val(16);
-    book.bibliographicReference = val(17);
-    book.coverUrl = val(18);
-    book.searchFrequency = std::atof(val(19).c_str());
-    
+
+    auto getValue = [&](int row, const char* colName) -> std::string {
+        const int col = PQfnumber(result, colName);
+        if (col < 0 || PQgetisnull(result, row, col)) {
+            return "";
+        }
+        return PQgetvalue(result, row, col);
+    };
+
+    book.id = std::atoi(getValue(0, "id").c_str());
+    book.title = getValue(0, "title");
+    book.author = getValue(0, "author");
+    book.genre = getValue(0, "genre");
+    book.subgenre = getValue(0, "subgenre");
+    book.publisher = getValue(0, "publisher");
+    book.year = std::atoi(getValue(0, "year").c_str());
+    book.format = getValue(0, "format");
+    book.rating = std::atof(getValue(0, "rating").c_str());
+    book.price = std::atof(getValue(0, "price").c_str());
+    book.ageRating = getValue(0, "age_rating");
+    book.isbn = getValue(0, "isbn");
+    book.totalPrintRun = std::atoll(getValue(0, "total_circulation").c_str());
+    book.signedToPrintDate = getValue(0, "print_sign_date");
+    const std::string additional = getValue(0, "additional_prints");
+    if (!additional.empty()) {
+        book.additionalPrintDates.push_back(additional);
+    }
+    book.coverImagePath = getValue(0, "cover_image_path");
+    book.licenseImagePath = getValue(0, "license_image_path");
+    book.bibliographicReference = getValue(0, "bibliographic_ref");
     return book;
 }
 
-std::string baseSelectSql() {
-    return R"SQL(
-SELECT 
-    books.id,
-    books.title,
-    books.author,
-    COALESCE(genres.name, '') AS genre_name,
-    COALESCE(subgenres.name, '') AS subgenre_name,
-    COALESCE(books.publisher, ''),
-    COALESCE(books.year, 0),
-    COALESCE(books.format, ''),
-    COALESCE(books.rating, 0),
-    COALESCE(books.price, 0),
-    COALESCE(books.age_rating, ''),
-    COALESCE(books.isbn, ''),
-    COALESCE(books.total_print_run, 0),
-    COALESCE(books.signed_to_print_date, ''),
-    COALESCE(books.additional_print_dates, ''),
-    COALESCE(books.cover_image_path, ''),
-    COALESCE(books.license_image_path, ''),
-    COALESCE(books.bibliographic_reference, ''),
-    COALESCE(books.cover_url, ''),
-    COALESCE(books.search_frequency, 1)
-FROM books
-LEFT JOIN subgenres ON subgenres.id = books.subgenre_id
-LEFT JOIN genres ON genres.id = subgenres.genre_id
-)SQL";
+LibraryStorage::LibraryStorage(std::string connectionString)
+    : connectionString_(std::move(connectionString)), db_(nullptr) {
+    if (connectionString_.empty()) {
+        connectionString_ = getEnvOrDefault(
+            "LIBRARY_PG_CONN",
+            "host=localhost port=5432 dbname=library user=postgres password=123"
+        );
+    }
 }
 
-bool runExec(PGconn* conn, const std::string& sql) {
-    PGresult* result = PQexec(conn, sql.c_str());
-    const bool ok = pgOk(result);
-    if (!ok) {
-        appendLog("ERROR", "SQL failed: " + sql + " | Error: " + std::string(PQerrorMessage(conn)));
+LibraryStorage::~LibraryStorage() {
+    if (db_ != nullptr) {
+        PQfinish(static_cast<PGconn*>(db_));
+        db_ = nullptr;
     }
+}
+
+bool LibraryStorage::open() {
+    if (db_ != nullptr) {
+        return true;
+    }
+
+    PGconn* conn = PQconnectdb(connectionString_.c_str());
+    if (PQstatus(conn) != CONNECTION_OK) {
+        logMessage("ERROR", std::string("DB connect failed: ") + PQerrorMessage(conn));
+        PQfinish(conn);
+        return false;
+    }
+
+    db_ = conn;
+    ensureImagesDir();
+    return true;
+}
+
+bool LibraryStorage::execute(const std::string& sql) const {
+    if (db_ == nullptr) {
+        return false;
+    }
+
+    PGresult* result = PQexec(static_cast<PGconn*>(db_), sql.c_str());
+    const ExecStatusType status = PQresultStatus(result);
+
+    const bool ok = status == PGRES_COMMAND_OK || status == PGRES_TUPLES_OK;
+    if (!ok) {
+        logMessage("ERROR", "SQL failed: " + sql + " | " + PQerrorMessage(static_cast<PGconn*>(db_)));
+    }
+
     PQclear(result);
     return ok;
 }
 
-std::vector<Book> runSelectBooks(PGconn* conn, const std::string& sql, const std::vector<std::string>& params = {}) {
-    std::vector<const char*> values;
-    values.reserve(params.size());
-    for (const auto& p : params) values.push_back(p.c_str());
-    
-    PGresult* result = PQexecParams(conn, sql.c_str(), 
-        static_cast<int>(values.size()), nullptr,
-        values.empty() ? nullptr : values.data(), nullptr, nullptr, 0);
-    
-    std::vector<Book> books;
-    if (!pgOk(result)) { 
-        appendLog("ERROR", "Select failed: " + std::string(PQerrorMessage(conn)));
-        PQclear(result); 
-        return books; 
+static bool columnExists(PGconn* conn, const std::string& table, const std::string& column) {
+    std::string sql =
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema='public' AND table_name='" + sqlEscape(table) +
+        "' AND column_name='" + sqlEscape(column) + "' LIMIT 1;";
+
+    PGresult* result = PQexec(conn, sql.c_str());
+    bool exists = false;
+    if (PQresultStatus(result) == PGRES_TUPLES_OK && PQntuples(result) > 0) {
+        exists = true;
     }
-    
-    const int rows = PQntuples(result);
-    books.reserve(rows);
-    for (int i = 0; i < rows; ++i) books.push_back(rowToBook(result, i));
-    
     PQclear(result);
-    return books;
+    return exists;
 }
 
-int fetchOrCreateGenreId(PGconn* conn, const std::string& genre) {
-    if (trim(genre).empty()) {
-        appendLog("DEBUG", "Empty genre, returning 0");
-        return 0;
+bool LibraryStorage::runMigrations() {
+    if (!open()) {
+        return false;
     }
-    
-    appendLog("DEBUG", "Creating/fetching genre: " + genre);
-    
-    const char* values[] = {genre.c_str()};
-    PGresult* result = PQexecParams(conn,
-        "INSERT INTO genres(name) VALUES($1) ON CONFLICT(name) DO UPDATE SET name=EXCLUDED.name RETURNING id;",
-        1, nullptr, values, nullptr, nullptr, 0);
-    
-    if (!pgOk(result) || PQntuples(result) == 0) { 
-        appendLog("ERROR", "Genre insert failed: " + std::string(PQerrorMessage(conn)));
-        PQclear(result); 
-        return 0; 
-    }
-    
-    const int id = std::atoi(PQgetvalue(result, 0, 0));
-    PQclear(result);
-    appendLog("DEBUG", "Genre ID: " + std::to_string(id));
-    return id;
-}
 
-int fetchOrCreateSubgenreId(PGconn* conn, int genreId, const std::string& subgenre) {
-    if (genreId <= 0 || trim(subgenre).empty()) {
-        appendLog("DEBUG", "Invalid genreId or empty subgenre");
-        return 0;
-    }
-    
-    appendLog("DEBUG", "Creating/fetching subgenre: " + subgenre + " (genre_id=" + std::to_string(genreId) + ")");
-    
-    const std::string g = std::to_string(genreId);
-    const char* values[] = {g.c_str(), subgenre.c_str()};
-    PGresult* result = PQexecParams(conn,
-        "INSERT INTO subgenres(genre_id,name) VALUES($1::int,$2) ON CONFLICT(genre_id,name) DO UPDATE SET name=EXCLUDED.name RETURNING id;",
-        2, nullptr, values, nullptr, nullptr, 0);
-    
-    if (!pgOk(result) || PQntuples(result) == 0) { 
-        appendLog("ERROR", "Subgenre insert failed: " + std::string(PQerrorMessage(conn)));
-        PQclear(result); 
-        return 0; 
-    }
-    
-    const int id = std::atoi(PQgetvalue(result, 0, 0));
-    PQclear(result);
-    appendLog("DEBUG", "Subgenre ID: " + std::to_string(id));
-    return id;
-}
+    PGconn* conn = static_cast<PGconn*>(db_);
 
-std::vector<Book> demoBooks() {
-    std::vector<Book> books;
-    
-    auto makeBook = [&](const char* title, const char* author, const char* genre, 
-                        const char* subgenre, const char* publisher, int year,
-                        double rating, double price, const char* isbn) {
-        Book book;
-        book.title = title;
-        book.author = author;
-        book.genre = genre;
-        book.subgenre = subgenre;
-        book.publisher = publisher;
-        book.year = year;
-        book.rating = rating;
-        book.price = price;
-        book.isbn = isbn;
-        book.searchFrequency = rating;
-        book.ageRating = "12+";
-        book.format = "70x100/16";
-        return book;
+    if (!execute(
+        "CREATE TABLE IF NOT EXISTS genres ("
+        "id SERIAL PRIMARY KEY,"
+        "name TEXT NOT NULL UNIQUE"
+        ");")) {
+        return false;
+    }
+
+    if (!execute(
+        "CREATE TABLE IF NOT EXISTS subgenres ("
+        "id SERIAL PRIMARY KEY,"
+        "genre_id INTEGER NOT NULL REFERENCES genres(id) ON DELETE CASCADE,"
+        "name TEXT NOT NULL,"
+        "UNIQUE(genre_id, name)"
+        ");")) {
+        return false;
+    }
+
+    if (!execute(
+        "CREATE TABLE IF NOT EXISTS books ("
+        "id SERIAL PRIMARY KEY,"
+        "title TEXT NOT NULL,"
+        "author TEXT NOT NULL,"
+        "subgenre_id INTEGER REFERENCES subgenres(id) ON DELETE SET NULL,"
+        "publisher TEXT DEFAULT '',"
+        "year INTEGER DEFAULT 0,"
+        "format TEXT DEFAULT '',"
+        "rating DOUBLE PRECISION DEFAULT 0,"
+        "price DOUBLE PRECISION DEFAULT 0,"
+        "age_rating TEXT DEFAULT '0+',"
+        "isbn TEXT UNIQUE,"
+        "total_circulation BIGINT DEFAULT 0,"
+        "print_sign_date TEXT DEFAULT '',"
+        "additional_prints TEXT DEFAULT '[]',"
+        "cover_image_path TEXT DEFAULT '',"
+        "license_image_path TEXT DEFAULT '',"
+        "bibliographic_ref TEXT DEFAULT '',"
+        "created_at TIMESTAMP DEFAULT NOW()"
+        ");")) {
+        return false;
+    }
+
+    const std::vector<std::pair<std::string, std::string>> migrations = {
+        {"books", "publisher TEXT DEFAULT ''"},
+        {"books", "format TEXT DEFAULT ''"},
+        {"books", "rating DOUBLE PRECISION DEFAULT 0"},
+        {"books", "price DOUBLE PRECISION DEFAULT 0"},
+        {"books", "age_rating TEXT DEFAULT '0+'"},
+        {"books", "isbn TEXT UNIQUE"},
+        {"books", "total_circulation BIGINT DEFAULT 0"},
+        {"books", "print_sign_date TEXT DEFAULT ''"},
+        {"books", "additional_prints TEXT DEFAULT '[]'"},
+        {"books", "cover_image_path TEXT DEFAULT ''"},
+        {"books", "license_image_path TEXT DEFAULT ''"},
+        {"books", "bibliographic_ref TEXT DEFAULT ''"},
+        {"books", "created_at TIMESTAMP DEFAULT NOW()"}
     };
-    
-    books.push_back(makeBook("1984", "George Orwell", "Fiction", "Novel", 
-                             "AST", 1949, 4.7, 420.0, "978-5-17-108831-3"));
-    
-    books.push_back(makeBook("Clean Code", "Robert Martin", "Technical", "Programming",
-                             "Piter", 2008, 4.6, 1200.0, "978-5-4461-0960-9"));
-    
-    return books;
-}
 
-} // namespace
+    for (const auto& migration : migrations) {
+        const std::string table = migration.first;
+        const std::string def = migration.second;
+        const std::string column = trim(def.substr(0, def.find(' ')));
 
-// LibraryStorage implementation
-LibraryStorage::LibraryStorage(std::string connectionString)
-    : connectionString_(connectionString.empty() ? defaultPgConn() : std::move(connectionString)) {}
-
-LibraryStorage::~LibraryStorage() {
-    if (db_ != nullptr) PQfinish(static_cast<PGconn*>(db_));
-}
-
-bool LibraryStorage::open() {
-    if (db_ != nullptr) return true;
-    
-    PGconn* conn = PQconnectdb(connectionString_.c_str());
-    if (PQstatus(conn) != CONNECTION_OK) {
-        appendLog("ERROR", "PostgreSQL connect failed: " + std::string(PQerrorMessage(conn)));
-        PQfinish(conn);
-        return false;
-    }
-    
-    PQsetNoticeProcessor(conn, ignorePgNotice, nullptr);
-    db_ = conn;
-    appendLog("INFO", "PostgreSQL connection established.");
-    return ensureSchema();
-}
-
-bool LibraryStorage::ensureSchema() {
-    return execute(R"SQL(
-CREATE TABLE IF NOT EXISTS genres (
-    id SERIAL PRIMARY KEY,
-    name TEXT NOT NULL UNIQUE
-);
-
-CREATE TABLE IF NOT EXISTS subgenres (
-    id SERIAL PRIMARY KEY,
-    genre_id INTEGER NOT NULL REFERENCES genres(id) ON DELETE CASCADE,
-    name TEXT NOT NULL,
-    UNIQUE(genre_id, name)
-);
-
-CREATE TABLE IF NOT EXISTS books (
-    id SERIAL PRIMARY KEY,
-    subgenre_id INTEGER REFERENCES subgenres(id) ON DELETE SET NULL,
-    title TEXT NOT NULL,
-    author TEXT NOT NULL,
-    publisher TEXT,
-    year INTEGER NOT NULL DEFAULT 0,
-    format TEXT,
-    rating REAL NOT NULL DEFAULT 0,
-    price REAL NOT NULL DEFAULT 0,
-    age_rating TEXT,
-    isbn TEXT UNIQUE,
-    total_print_run BIGINT NOT NULL DEFAULT 0,
-    signed_to_print_date TEXT,
-    additional_print_dates TEXT,
-    cover_image_path TEXT,
-    license_image_path TEXT,
-    bibliographic_reference TEXT,
-    cover_url TEXT,
-    search_frequency REAL NOT NULL DEFAULT 1,
-    created_at TIMESTAMP NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_books_title ON books(title);
-CREATE INDEX IF NOT EXISTS idx_books_author ON books(author);
-CREATE INDEX IF NOT EXISTS idx_books_isbn ON books(isbn);
-CREATE INDEX IF NOT EXISTS idx_books_subgenre_id ON books(subgenre_id);
-)SQL");
-}
-
-bool LibraryStorage::execute(const std::string& sql) const {
-    return runExec(static_cast<PGconn*>(db_), sql);
-}
-
-bool LibraryStorage::ensureGenreHierarchy(const Book& book) const {
-    PGconn* conn = static_cast<PGconn*>(db_);
-    if (trim(book.genre).empty() || trim(book.subgenre).empty()) {
-        appendLog("DEBUG", "Empty genre/subgenre, skipping hierarchy");
-        return true;
-    }
-    
-    const int genreId = fetchOrCreateGenreId(conn, book.genre);
-    if (genreId <= 0) return false;
-    
-    const int subgenreId = fetchOrCreateSubgenreId(conn, genreId, book.subgenre);
-    return subgenreId > 0;
-}
-
-Book LibraryStorage::readBookFromStatement(void*) { return Book{}; }
-
-std::vector<Book> LibraryStorage::allBooks() const {
-    return runSelectBooks(static_cast<PGconn*>(db_), 
-        baseSelectSql() + " ORDER BY lower(books.title), lower(books.author), books.id;");
-}
-
-std::vector<Book> LibraryStorage::searchBooks(const std::string& query) const {
-    PGconn* conn = static_cast<PGconn*>(db_);
-    const std::string q = "%" + query + "%";
-    
-    auto byTitle = runSelectBooks(conn,
-        baseSelectSql() + " WHERE lower(books.title) LIKE lower($1) ORDER BY lower(books.title), books.id;",
-        {q});
-    
-    if (!byTitle.empty()) return byTitle;
-    
-    return runSelectBooks(conn,
-        baseSelectSql() + " WHERE lower(books.author) LIKE lower($1) ORDER BY lower(books.author), books.id;",
-        {q});
-}
-
-std::vector<Book> LibraryStorage::sortedBooks(SortField field, bool ascending) const {
-    std::string column;
-    switch (field) {
-        case SortField::Title: column = "lower(books.title)"; break;
-        case SortField::Author: column = "lower(books.author)"; break;
-        case SortField::Year: column = "books.year"; break;
-        case SortField::Rating: column = "books.rating"; break;
-        case SortField::Price: column = "books.price"; break;
-        default: column = "lower(books.title)";
-    }
-    
-    return runSelectBooks(static_cast<PGconn*>(db_),
-        baseSelectSql() + " ORDER BY " + column + (ascending ? " ASC" : " DESC") + ", books.id;");
-}
-
-bool LibraryStorage::upsertBook(Book& book) {
-    PGconn* conn = static_cast<PGconn*>(db_);
-    
-    appendLog("DEBUG", "=== Starting upsert ===");
-    appendLog("DEBUG", "Book title: " + book.title);
-    appendLog("DEBUG", "Book author: " + book.author);
-    appendLog("DEBUG", "Book genre: " + book.genre);
-    appendLog("DEBUG", "Book subgenre: " + book.subgenre);
-    
-    if (!runExec(conn, "BEGIN;")) {
-        appendLog("ERROR", "BEGIN transaction failed");
-        return false;
-    }
-    
-    const int genreId = fetchOrCreateGenreId(conn, book.genre);
-    appendLog("DEBUG", "Genre ID result: " + std::to_string(genreId));
-    
-    const int subgenreId = fetchOrCreateSubgenreId(conn, genreId, book.subgenre);
-    appendLog("DEBUG", "Subgenre ID result: " + std::to_string(subgenreId));
-    
-    const std::string id = book.id > 0 ? std::to_string(book.id) : "";
-    const std::string sid = subgenreId > 0 ? std::to_string(subgenreId) : "";
-    
-    const std::string additional = [&]() {
-        std::string result;
-        for (std::size_t i = 0; i < book.additionalPrintDates.size(); ++i) {
-            if (i > 0) result += "|";
-            result += book.additionalPrintDates[i];
+        if (!columnExists(conn, table, column)) {
+            if (!execute("ALTER TABLE " + table + " ADD COLUMN " + def + ";")) {
+                return false;
+            }
         }
-        return result;
-    }();
-    
-    const std::string year = std::to_string(book.year);
-    const std::string rating = std::to_string(book.rating);
-    const std::string price = std::to_string(book.price);
-    const std::string totalPrintRun = std::to_string(book.totalPrintRun);
-    const std::string searchFrequency = std::to_string(book.searchFrequency);
+    }
 
-    const char* values[] = {
-        id.c_str(), sid.c_str(), book.title.c_str(), book.author.c_str(), book.publisher.c_str(),
-        year.c_str(), book.format.c_str(),
-        rating.c_str(), price.c_str(),
-        book.ageRating.c_str(), book.isbn.c_str(),
-        totalPrintRun.c_str(), book.signedToPrintDate.c_str(),
-        additional.c_str(), book.coverImagePath.c_str(), book.licenseImagePath.c_str(),
-        book.bibliographicReference.c_str(), book.coverUrl.c_str(),
-        searchFrequency.c_str()
-    };
-    
-    appendLog("DEBUG", "Executing INSERT/UPDATE query");
-    
-    PGresult* result = PQexecParams(conn, R"SQL(
-INSERT INTO books(id, subgenre_id, title, author, publisher, year, format, rating, price,
-    age_rating, isbn, total_print_run, signed_to_print_date, additional_print_dates,
-    cover_image_path, license_image_path, bibliographic_reference, cover_url, search_frequency)
-VALUES (NULLIF($1,'')::int, NULLIF($2,'')::int, $3,$4,$5, $6::int,$7,$8::real,$9::real,
-    $10,$11, $12::bigint,$13,$14, $15,$16,$17,$18,$19::real)
-ON CONFLICT(id) DO UPDATE SET
-    subgenre_id = EXCLUDED.subgenre_id, title = EXCLUDED.title, author = EXCLUDED.author,
-    publisher = EXCLUDED.publisher, year = EXCLUDED.year, format = EXCLUDED.format,
-    rating = EXCLUDED.rating, price = EXCLUDED.price, age_rating = EXCLUDED.age_rating,
-    isbn = EXCLUDED.isbn, total_print_run = EXCLUDED.total_print_run,
-    signed_to_print_date = EXCLUDED.signed_to_print_date,
-    additional_print_dates = EXCLUDED.additional_print_dates,
-    cover_image_path = EXCLUDED.cover_image_path,
-    license_image_path = EXCLUDED.license_image_path,
-    bibliographic_reference = EXCLUDED.bibliographic_reference,
-    cover_url = EXCLUDED.cover_url, search_frequency = EXCLUDED.search_frequency
-RETURNING id;
-)SQL", 19, nullptr, values, nullptr, nullptr, 0);
-    
-    if (!pgOk(result)) {
-        appendLog("ERROR", "Book upsert SQL failed: " + std::string(PQerrorMessage(conn)));
-        PQclear(result);
-        runExec(conn, "ROLLBACK;");
-        return false;
-    }
-    
-    if (PQntuples(result) == 0) {
-        appendLog("ERROR", "Book upsert returned no rows");
-        PQclear(result);
-        runExec(conn, "ROLLBACK;");
-        return false;
-    }
-    
-    book.id = std::atoi(PQgetvalue(result, 0, 0));
-    PQclear(result);
-    
-    if (!runExec(conn, "COMMIT;")) {
-        appendLog("ERROR", "COMMIT failed");
-        return false;
-    }
-    
-    appendLog("DEBUG", "=== Upsert complete, book ID: " + std::to_string(book.id) + " ===");
+    execute("CREATE INDEX IF NOT EXISTS idx_books_title ON books(title);");
+    execute("CREATE INDEX IF NOT EXISTS idx_books_author ON books(author);");
+    execute("CREATE INDEX IF NOT EXISTS idx_books_subgenre_id ON books(subgenre_id);");
+    execute("CREATE INDEX IF NOT EXISTS idx_subgenres_genre_id ON subgenres(genre_id);");
+
+    logMessage("INFO", "Migrations completed");
     return true;
 }
 
-bool LibraryStorage::removeBookById(int id) {
+bool LibraryStorage::ensureSchema() {
+    return runMigrations();
+}
+
+bool LibraryStorage::ensureGenreHierarchy(const Book& book) const {
+    if (db_ == nullptr) {
+        return false;
+    }
+
     PGconn* conn = static_cast<PGconn*>(db_);
-    const std::string idText = std::to_string(id);
-    const char* values[] = {idText.c_str()};
-    
-    PGresult* result = PQexecParams(conn, "DELETE FROM books WHERE id = $1::int;",
-        1, nullptr, values, nullptr, nullptr, 0);
-    
-    if (!pgOk(result)) { PQclear(result); return false; }
-    
-    const int affected = std::atoi(PQcmdTuples(result));
+    const std::string genre = trim(book.genre);
+    const std::string subgenre = trim(book.subgenre);
+
+    if (genre.empty() || subgenre.empty()) {
+        return true;
+    }
+
+    std::string genreSql =
+        "INSERT INTO genres(name) VALUES('" + sqlEscape(genre) + "') "
+        "ON CONFLICT(name) DO NOTHING;";
+    PGresult* result = PQexec(conn, genreSql.c_str());
     PQclear(result);
-    return affected > 0;
+
+    std::string subgenreSql =
+        "INSERT INTO subgenres(genre_id, name) "
+        "SELECT id, '" + sqlEscape(subgenre) + "' FROM genres WHERE name='" + sqlEscape(genre) + "' "
+        "ON CONFLICT(genre_id, name) DO NOTHING;";
+    result = PQexec(conn, subgenreSql.c_str());
+    const bool ok = PQresultStatus(result) == PGRES_COMMAND_OK;
+    PQclear(result);
+
+    return ok;
 }
 
 bool LibraryStorage::isEmpty() const {
-    PGconn* conn = static_cast<PGconn*>(db_);
-    PGresult* result = PQexec(conn, "SELECT COUNT(*) FROM books;");
-    if (!pgOk(result) || PQntuples(result) == 0) { PQclear(result); return true; }
-    
+    if (db_ == nullptr) {
+        return true;
+    }
+
+    PGresult* result = PQexec(static_cast<PGconn*>(db_), "SELECT COUNT(*) FROM books;");
+    if (PQresultStatus(result) != PGRES_TUPLES_OK || PQntuples(result) == 0) {
+        PQclear(result);
+        return true;
+    }
+
     const bool empty = std::atoi(PQgetvalue(result, 0, 0)) == 0;
     PQclear(result);
     return empty;
 }
 
-// NetworkMetadataClient - OpenLibrary API (ИСПРАВЛЕНО для Windows)
-std::optional<Book> NetworkMetadataClient::fetchByQuery(const Book& draft) const {
-    if (!isNetworkEnabled()) {
-        appendLog("INFO", "Network disabled, skipping API fetch");
-        return std::nullopt;
+bool LibraryStorage::rotateBackupIfNeeded() const {
+    const std::string stampFile = ".last_backup_stamp";
+    const auto now = std::chrono::system_clock::now();
+
+    bool needBackup = true;
+    if (fs::exists(stampFile)) {
+        std::ifstream in(stampFile);
+        long long lastTs = 0;
+        in >> lastTs;
+        const auto last = std::chrono::system_clock::time_point(std::chrono::seconds(lastTs));
+        const auto diff = std::chrono::duration_cast<std::chrono::hours>(now - last).count();
+        needBackup = diff >= 24 * 7;
     }
-    
-    std::string query = draft.isbn;
-    if (query.empty()) {
-        query = draft.title;
-        if (!draft.author.empty()) query += " " + draft.author;
+
+    if (!needBackup) {
+        return true;
     }
-    
-    query = trim(query);
-    if (query.empty()) {
-        appendLog("WARN", "Empty query for API");
-        return std::nullopt;
+
+    fs::create_directories("backup");
+    const std::string fileName = "backup/library_backup.sql";
+
+    std::string command = "pg_dump \"" + connectionString_ + "\" > \"" + fileName + "\"";
+    const int rc = std::system(command.c_str());
+
+    if (rc != 0) {
+        logMessage("WARNING", "Backup failed via pg_dump");
+        return false;
     }
-    
-    // URL-encoding - БЕЗ ПРОБЕЛОВ в fields!
-    std::string encoded;
-    for (char c : query) {
-        if (c == ' ') encoded += "+";
-        else if (c == '"' || c == '<' || c == '>' || c == '&' || c == '#') {
-            char hex[4];
-            snprintf(hex, sizeof(hex), "%%%02X", static_cast<unsigned char>(c));
-            encoded += hex;
-        }
-        else encoded += c;
-    }
-    
-    // ИСПРАВЛЕНО: Нет пробелов в fields parameter!
-    const std::string url = "https://openlibrary.org/search.json?q=" + encoded + 
-        "&limit=1&fields=title,author_name,first_publish_year,isbn,publisher,cover_i";
-    
-    appendLog("INFO", "API URL: " + url);
-    
-    // Retry logic (3 attempts)
-    for (int attempt = 1; attempt <= 3; ++attempt) {
-        // ИСПРАВЛЕНО: Правильная команда curl для Windows PowerShell
-        // Используем двойные кавычки и правильный формат
-        const std::string command = "curl -sS --max-time 5 "
-            "-H \"User-Agent: LibraryBackendCPP/1.0\" "
-            "\"" + url + "\" "
-            "-w \"\\n__HTTP_CODE__:%{http_code}\\n\"";
-        
-        appendLog("INFO", "Executing curl (attempt " + std::to_string(attempt) + ")");
-        
-        const std::string raw = readCommandOutput(command);
-        appendLog("INFO", "Curl response length: " + std::to_string(raw.size()));
-        
-        if (raw.empty()) {
-            if (attempt < 3) {
-                appendLog("WARN", "API request failed, retry " + std::to_string(attempt));
-                std::this_thread::sleep_for(std::chrono::seconds(2));
-            }
-            continue;
-        }
-        
-        // Parse HTTP code
-        const auto markerPos = raw.rfind("__HTTP_CODE__:");
-        std::string response;
-        int httpCode = 0;
-        
-        if (markerPos == std::string::npos) {
-            response = raw;
-        } else {
-            response = raw.substr(0, markerPos);
-            httpCode = std::atoi(trim(raw.substr(markerPos + 15)).c_str());
-        }
-        
-        appendLog("INFO", "HTTP Code: " + std::to_string(httpCode));
-        
-        if (httpCode == 200) {
-            Book remote;
-            remote.title = jsonStringField(response, "title");
-            remote.author = jsonStringField(response, "author_name");
-            remote.publisher = jsonStringField(response, "publisher");
-            remote.year = jsonIntegerField(response, "first_publish_year");
-            
-            const std::string isbn = jsonStringField(response, "isbn");
-            if (!isbn.empty()) remote.isbn = isbn;
-            
-            const int coverId = jsonIntegerField(response, "cover_i");
-            if (coverId > 0) {
-                remote.coverUrl = "https://covers.openlibrary.org/b/id/" + 
-                    std::to_string(coverId) + "-L.jpg";
-            }
-            
-            if (!remote.title.empty() || !remote.author.empty() || !remote.isbn.empty()) {
-                appendLog("INFO", "API fetch successful: " + remote.title);
-                return remote;
-            }
-        }
-        
-        if (httpCode == 404 || httpCode == 400) {
-            appendLog("WARN", "Book not found in API");
-            return std::nullopt;
-        }
-        
-        if (attempt < 3) {
-            appendLog("WARN", "Retrying...");
-            std::this_thread::sleep_for(std::chrono::seconds(1));
-        }
-    }
-    
-    appendLog("WARN", "API unavailable after 3 attempts, using manual data");
-    return std::nullopt;
+
+    const auto epoch = std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count();
+    std::ofstream out(stampFile, std::ios::trunc);
+    out << epoch;
+
+    logMessage("INFO", "Backup completed: " + fileName);
+    return true;
 }
 
-// LibraryBackendService implementation
+static std::vector<Book> fetchBooksBySql(PGconn* conn, const std::string& sql) {
+    std::vector<Book> books;
+
+    PGresult* result = PQexec(conn, sql.c_str());
+    if (PQresultStatus(result) != PGRES_TUPLES_OK) {
+        logMessage("ERROR", "Fetch failed: " + std::string(PQerrorMessage(conn)));
+        PQclear(result);
+        return books;
+    }
+
+    const int rows = PQntuples(result);
+
+    auto getValue = [&](int row, const char* colName) -> std::string {
+        const int col = PQfnumber(result, colName);
+        if (col < 0 || PQgetisnull(result, row, col)) {
+            return "";
+        }
+        return PQgetvalue(result, row, col);
+    };
+
+    for (int i = 0; i < rows; ++i) {
+        Book book;
+        book.id = std::atoi(getValue(i, "id").c_str());
+        book.title = getValue(i, "title");
+        book.author = getValue(i, "author");
+        book.genre = getValue(i, "genre");
+        book.subgenre = getValue(i, "subgenre");
+        book.publisher = getValue(i, "publisher");
+        book.year = std::atoi(getValue(i, "year").c_str());
+        book.format = getValue(i, "format");
+        book.rating = std::atof(getValue(i, "rating").c_str());
+        book.price = std::atof(getValue(i, "price").c_str());
+        book.ageRating = getValue(i, "age_rating");
+        book.isbn = getValue(i, "isbn");
+        book.totalPrintRun = std::atoll(getValue(i, "total_circulation").c_str());
+        book.signedToPrintDate = getValue(i, "print_sign_date");
+        const std::string additional = getValue(i, "additional_prints");
+        if (!additional.empty()) {
+            book.additionalPrintDates.push_back(additional);
+        }
+        book.coverImagePath = getValue(i, "cover_image_path");
+        book.licenseImagePath = getValue(i, "license_image_path");
+        book.bibliographicReference = getValue(i, "bibliographic_ref");
+        books.push_back(book);
+    }
+
+    PQclear(result);
+    return books;
+}
+
+std::vector<Book> LibraryStorage::allBooks() const {
+    if (db_ == nullptr) {
+        return {};
+    }
+
+    return fetchBooksBySql(
+        static_cast<PGconn*>(db_),
+        "SELECT b.id, b.title, b.author, g.name AS genre, sg.name AS subgenre, "
+        "b.publisher, b.year, b.format, b.rating, b.price, b.age_rating, b.isbn, "
+        "b.total_circulation, b.print_sign_date, b.additional_prints, "
+        "b.cover_image_path, b.license_image_path, b.bibliographic_ref "
+        "FROM books b "
+        "LEFT JOIN subgenres sg ON b.subgenre_id = sg.id "
+        "LEFT JOIN genres g ON sg.genre_id = g.id;"
+    );
+}
+
+static bool compareBooksByField(const Book& a, const Book& b, SortField field, bool ascending) {
+    bool result = false;
+
+    switch (field) {
+        case SortField::Title:
+            result = normalizeLower(a.title) <= normalizeLower(b.title);
+            break;
+        case SortField::Author:
+            result = normalizeLower(a.author) <= normalizeLower(b.author);
+            break;
+        case SortField::Genre:
+            result = normalizeLower(a.genre) <= normalizeLower(b.genre);
+            break;
+        case SortField::Subgenre:
+            result = normalizeLower(a.subgenre) <= normalizeLower(b.subgenre);
+            break;
+        case SortField::Publisher:
+            result = normalizeLower(a.publisher) <= normalizeLower(b.publisher);
+            break;
+        case SortField::Year:
+            result = a.year <= b.year;
+            break;
+        case SortField::Format:
+            result = normalizeLower(a.format) <= normalizeLower(b.format);
+            break;
+        case SortField::Rating:
+            result = a.rating <= b.rating;
+            break;
+        case SortField::Price:
+            result = a.price <= b.price;
+            break;
+        case SortField::AgeRating:
+            result = normalizeLower(a.ageRating) <= normalizeLower(b.ageRating);
+            break;
+        case SortField::Isbn:
+            result = normalizeLower(a.isbn) <= normalizeLower(b.isbn);
+            break;
+        case SortField::TotalPrintRun:
+            result = a.totalPrintRun <= b.totalPrintRun;
+            break;
+        case SortField::SignedToPrintDate:
+            result = normalizeLower(a.signedToPrintDate) <= normalizeLower(b.signedToPrintDate);
+            break;
+    }
+
+    return ascending ? result : !result;
+}
+
+static void quickSortBooks(std::vector<Book>& books, int left, int right, SortField field, bool ascending) {
+    if (left >= right) {
+        return;
+    }
+
+    int i = left;
+    int j = right;
+    Book pivot = books[(left + right) / 2];
+
+    while (i <= j) {
+        while (compareBooksByField(books[i], pivot, field, ascending) &&
+               !(compareBooksByField(pivot, books[i], field, ascending) &&
+                 compareBooksByField(books[i], pivot, field, ascending))) {
+            ++i;
+            if (i > right) break;
+        }
+
+        while (compareBooksByField(pivot, books[j], field, ascending) &&
+               !(compareBooksByField(books[j], pivot, field, ascending) &&
+                 compareBooksByField(pivot, books[j], field, ascending))) {
+            --j;
+            if (j < left) break;
+        }
+
+        if (i <= j && i <= right && j >= left) {
+            std::swap(books[i], books[j]);
+            ++i;
+            --j;
+        }
+    }
+
+    if (left < j) quickSortBooks(books, left, j, field, ascending);
+    if (i < right) quickSortBooks(books, i, right, field, ascending);
+}
+
+std::vector<Book> LibraryStorage::sortedBooks(SortField field, bool ascending) const {
+    std::vector<Book> books = allBooks();
+    if (!books.empty()) {
+        quickSortBooks(books, 0, static_cast<int>(books.size()) - 1, field, ascending);
+    }
+    return books;
+}
+
+static int binarySearchFirstTitle(const std::vector<Book>& books, const std::string& q) {
+    int left = 0;
+    int right = static_cast<int>(books.size()) - 1;
+    int found = -1;
+
+    while (left <= right) {
+        const int mid = left + (right - left) / 2;
+        const std::string value = normalizeLower(books[mid].title);
+
+        if (value.find(q) != std::string::npos) {
+            found = mid;
+            right = mid - 1;
+        } else if (value < q) {
+            left = mid + 1;
+        } else {
+            right = mid - 1;
+        }
+    }
+
+    return found;
+}
+
+std::vector<Book> LibraryStorage::searchBooks(const std::string& query) const {
+    const std::string q = normalizeLower(query);
+    if (q.empty()) {
+        return allBooks();
+    }
+
+    std::vector<Book> byTitle = allBooks();
+    if (!byTitle.empty()) {
+        quickSortBooks(byTitle, 0, static_cast<int>(byTitle.size()) - 1, SortField::Title, true);
+    }
+
+    std::vector<Book> result;
+    std::set<int> usedIds;
+
+    const int pos = binarySearchFirstTitle(byTitle, q);
+    if (pos >= 0) {
+        for (int i = pos; i < static_cast<int>(byTitle.size()); ++i) {
+            if (normalizeLower(byTitle[i].title).find(q) != std::string::npos) {
+                if (usedIds.insert(byTitle[i].id).second) {
+                    result.push_back(byTitle[i]);
+                }
+            } else {
+                break;
+            }
+        }
+    } else {
+        for (const auto& book : byTitle) {
+            if (normalizeLower(book.title).find(q) != std::string::npos) {
+                if (usedIds.insert(book.id).second) {
+                    result.push_back(book);
+                }
+            }
+        }
+    }
+
+    std::vector<Book> all = allBooks();
+    for (const auto& book : all) {
+        if (usedIds.count(book.id) == 0 && normalizeLower(book.author).find(q) != std::string::npos) {
+            usedIds.insert(book.id);
+            result.push_back(book);
+        }
+    }
+
+    return result;
+}
+
+static int getSubgenreId(PGconn* conn, const std::string& genre, const std::string& subgenre) {
+    if (genre.empty() || subgenre.empty()) {
+        return 0;
+    }
+
+    std::string sql =
+        "SELECT sg.id "
+        "FROM subgenres sg "
+        "JOIN genres g ON g.id = sg.genre_id "
+        "WHERE g.name='" + sqlEscape(genre) + "' AND sg.name='" + sqlEscape(subgenre) + "' "
+        "LIMIT 1;";
+
+    PGresult* result = PQexec(conn, sql.c_str());
+    int id = 0;
+    if (PQresultStatus(result) == PGRES_TUPLES_OK && PQntuples(result) > 0) {
+        id = std::atoi(PQgetvalue(result, 0, 0));
+    }
+    PQclear(result);
+    return id;
+}
+
+bool LibraryStorage::upsertBook(Book& book) {
+    if (!open()) {
+        return false;
+    }
+
+    if (!ensureGenreHierarchy(book)) {
+        return false;
+    }
+
+    PGconn* conn = static_cast<PGconn*>(db_);
+    const int subgenreId = getSubgenreId(conn, trim(book.genre), trim(book.subgenre));
+
+    std::ostringstream sql;
+    if (book.id > 0) {
+        sql << "UPDATE books SET "
+            << "title='" << sqlEscape(book.title) << "', "
+            << "author='" << sqlEscape(book.author) << "', "
+            << "subgenre_id=" << (subgenreId > 0 ? std::to_string(subgenreId) : "NULL") << ", "
+            << "publisher='" << sqlEscape(book.publisher) << "', "
+            << "year=" << book.year << ", "
+            << "format='" << sqlEscape(book.format) << "', "
+            << "rating=" << book.rating << ", "
+            << "price=" << book.price << ", "
+            << "age_rating='" << sqlEscape(book.ageRating) << "', "
+            << "isbn=" << (book.isbn.empty() ? "NULL" : "'" + sqlEscape(book.isbn) + "'") << ", "
+            << "total_circulation=" << book.totalPrintRun << ", "
+            << "print_sign_date='" << sqlEscape(book.signedToPrintDate) << "', "
+            << "additional_prints='" << sqlEscape(book.additionalPrintDates.empty() ? "[]" : book.additionalPrintDates[0]) << "', "
+            << "cover_image_path='" << sqlEscape(book.coverImagePath) << "', "
+            << "license_image_path='" << sqlEscape(book.licenseImagePath) << "', "
+            << "bibliographic_ref='" << sqlEscape(book.bibliographicReference) << "' "
+            << "WHERE id=" << book.id << ";";
+    } else {
+        sql << "INSERT INTO books("
+            << "title, author, subgenre_id, publisher, year, format, rating, price, age_rating, isbn, "
+            << "total_circulation, print_sign_date, additional_prints, cover_image_path, license_image_path, bibliographic_ref"
+            << ") VALUES ("
+            << "'" << sqlEscape(book.title) << "', "
+            << "'" << sqlEscape(book.author) << "', "
+            << (subgenreId > 0 ? std::to_string(subgenreId) : "NULL") << ", "
+            << "'" << sqlEscape(book.publisher) << "', "
+            << book.year << ", "
+            << "'" << sqlEscape(book.format) << "', "
+            << book.rating << ", "
+            << book.price << ", "
+            << "'" << sqlEscape(book.ageRating) << "', "
+            << (book.isbn.empty() ? "NULL" : "'" + sqlEscape(book.isbn) + "'") << ", "
+            << book.totalPrintRun << ", "
+            << "'" << sqlEscape(book.signedToPrintDate) << "', "
+            << "'" << sqlEscape(book.additionalPrintDates.empty() ? "[]" : book.additionalPrintDates[0]) << "', "
+            << "'" << sqlEscape(book.coverImagePath) << "', "
+            << "'" << sqlEscape(book.licenseImagePath) << "', "
+            << "'" << sqlEscape(book.bibliographicReference) << "'"
+            << ") RETURNING id;";
+    }
+
+    PGresult* result = PQexec(conn, sql.str().c_str());
+    const ExecStatusType status = PQresultStatus(result);
+
+    bool ok = false;
+    if (book.id > 0) {
+        ok = status == PGRES_COMMAND_OK;
+    } else {
+        ok = status == PGRES_TUPLES_OK && PQntuples(result) > 0;
+        if (ok) {
+            book.id = std::atoi(PQgetvalue(result, 0, 0));
+        }
+    }
+
+    if (!ok) {
+        logMessage("ERROR", std::string("Upsert failed: ") + PQerrorMessage(conn));
+    } else {
+        logMessage("INFO", "Book id=" + std::to_string(book.id) + " added/updated");
+    }
+
+    PQclear(result);
+    return ok;
+}
+
+bool LibraryStorage::removeBookById(int id) {
+    if (!open()) {
+        return false;
+    }
+
+    PGconn* conn = static_cast<PGconn*>(db_);
+
+    std::string query =
+        "SELECT cover_image_path, license_image_path FROM books WHERE id=" + std::to_string(id) + " LIMIT 1;";
+    PGresult* result = PQexec(conn, query.c_str());
+
+    std::string coverPath;
+    std::string licensePath;
+    if (PQresultStatus(result) == PGRES_TUPLES_OK && PQntuples(result) > 0) {
+        if (!PQgetisnull(result, 0, 0)) coverPath = PQgetvalue(result, 0, 0);
+        if (!PQgetisnull(result, 0, 1)) licensePath = PQgetvalue(result, 0, 1);
+    }
+    PQclear(result);
+
+    std::string removeSql = "DELETE FROM books WHERE id=" + std::to_string(id) + ";";
+    result = PQexec(conn, removeSql.c_str());
+    const bool ok = PQresultStatus(result) == PGRES_COMMAND_OK;
+    PQclear(result);
+
+    if (ok) {
+        deleteFileIfExists(coverPath);
+        deleteFileIfExists(licensePath);
+        logMessage("INFO", "Book id=" + std::to_string(id) + " removed");
+    } else {
+        logMessage("ERROR", "Book removal failed for id=" + std::to_string(id));
+    }
+
+    return ok;
+}
+
 LibraryBackendService::LibraryBackendService(LibraryStorage storage)
     : storage_(std::move(storage)) {}
 
 bool LibraryBackendService::initialize() {
-    ensureLocalArtifacts();
-    appendLog("INFO", "=== Starting initialization ===");
-    
     if (!storage_.open()) {
-        appendLog("ERROR", "Storage open failed");
         return false;
     }
-    
-    appendLog("INFO", "Storage opened successfully");
-    appendLog("INFO", "=== Initialization complete ===");
-    
+    if (!storage_.ensureSchema()) {
+        return false;
+    }
+    storage_.rotateBackupIfNeeded();
     return true;
 }
 
-bool LibraryBackendService::addOrUpdateBook(Book& book, bool fetchFromNetwork) {
-    appendLog("INFO", "=== addOrUpdateBook called ===");
-    appendLog("INFO", "fetchFromNetwork: " + std::string(fetchFromNetwork ? "true" : "false"));
-    appendLog("INFO", "Book title: " + book.title);
-    appendLog("INFO", "Book author: " + book.author);
-    appendLog("INFO", "Book genre: " + book.genre);
-    appendLog("INFO", "Book subgenre: " + book.subgenre);
-    
-    if (fetchFromNetwork && isNetworkEnabled()) {
-        appendLog("INFO", "Fetching metadata from OpenLibrary API...");
-        const auto remote = networkClient_.fetchByQuery(book);
-        if (remote.has_value()) {
-            if (book.title.empty()) book.title = remote->title;
-            if (book.author.empty()) book.author = remote->author;
-            if (book.publisher.empty()) book.publisher = remote->publisher;
-            if (book.year == 0) book.year = remote->year;
-            if (book.isbn.empty()) book.isbn = remote->isbn;
-            if (book.coverUrl.empty()) book.coverUrl = remote->coverUrl;
-            appendLog("INFO", "API data merged successfully");
-        } else {
-            appendLog("WARN", "API fetch failed, using manual data");
-        }
+static std::string makeGostReference(const Book& book) {
+    std::ostringstream out;
+    out << book.author;
+    if (!book.author.empty() && !book.title.empty()) {
+        out << " ";
     }
-    
-    if (trim(book.title).empty() || trim(book.author).empty()) {
-        appendLog("ERROR", "Empty title or author");
-        return false;
+    out << book.title;
+    if (book.year > 0) {
+        out << ". — " << book.year;
     }
-    
-    bool result = storage_.upsertBook(book);
-    appendLog("INFO", "Book upsert result: " + std::string(result ? "SUCCESS" : "FAILED"));
-    return result;
+    if (!book.publisher.empty()) {
+        out << ". — " << book.publisher;
+    }
+    if (!book.isbn.empty()) {
+        out << ". — ISBN " << book.isbn;
+    }
+    return out.str();
+}
+
+bool LibraryBackendService::addOrUpdateBook(Book& book, bool /*fetchFromNetwork*/) {
+    if (book.bibliographicReference.empty()) {
+        book.bibliographicReference = makeGostReference(book);
+    }
+    return storage_.upsertBook(book);
 }
 
 bool LibraryBackendService::removeBookById(int id) {
@@ -789,111 +857,57 @@ std::vector<Book> LibraryBackendService::allBooks() const {
 }
 
 std::vector<ObstNode> LibraryBackendService::buildOptimalSearchTreeByIsbn() const {
-    auto books = storage_.allBooks();
-    std::sort(books.begin(), books.end(), 
-        [](const Book& lhs, const Book& rhs) { return lhs.isbn < rhs.isbn; });
-    
-    const int n = static_cast<int>(books.size());
-    if (n == 0) return {};
-    
-    std::vector<std::vector<double>> cost(n, std::vector<double>(n, 0.0));
-    std::vector<std::vector<int>> root(n, std::vector<int>(n, -1));
-    std::vector<double> prefix(n + 1, 0.0);
-    
-    for (int i = 0; i < n; ++i) {
-        prefix[i + 1] = prefix[i] + std::max(books[i].searchFrequency, 0.1);
-        cost[i][i] = std::max(books[i].searchFrequency, 0.1);
-        root[i][i] = i;
-    }
-    
-    for (int len = 2; len <= n; ++len) {
-        for (int i = 0; i + len - 1 < n; ++i) {
-            const int j = i + len - 1;
-            const double freqSum = prefix[j + 1] - prefix[i];
-            cost[i][j] = std::numeric_limits<double>::max();
-            
-            for (int r = i; r <= j; ++r) {
-                const double left = (r > i) ? cost[i][r - 1] : 0.0;
-                const double right = (r < j) ? cost[r + 1][j] : 0.0;
-                const double current = left + right + freqSum;
-                if (current < cost[i][j]) {
-                    cost[i][j] = current;
-                    root[i][j] = r;
-                }
-            }
-        }
-    }
-    
+    std::vector<Book> books = storage_.sortedBooks(SortField::Isbn, true);
     std::vector<ObstNode> nodes;
+
     std::function<int(int, int)> build = [&](int left, int right) -> int {
-        if (left > right) return -1;
-        const int pivot = root[left][right];
-        const int idx = static_cast<int>(nodes.size());
-        nodes.push_back(ObstNode{books[pivot].isbn, books[pivot].id, -1, -1});
-        nodes[idx].left = build(left, pivot - 1);
-        nodes[idx].right = build(pivot + 1, right);
-        return idx;
+        if (left > right) {
+            return -1;
+        }
+        int mid = (left + right) / 2;
+        ObstNode node;
+        node.isbn = books[mid].isbn;
+        node.bookId = books[mid].id;
+        nodes.push_back(node);
+        int index = static_cast<int>(nodes.size()) - 1;
+        nodes[index].left = build(left, mid - 1);
+        nodes[index].right = build(mid + 1, right);
+        return index;
     };
-    
-    build(0, n - 1);
+
+    if (!books.empty()) {
+        build(0, static_cast<int>(books.size()) - 1);
+    }
+
     return nodes;
 }
 
 SortField LibraryBackendService::parseSortField(const std::string& value) {
-    std::string key = value;
-    std::transform(key.begin(), key.end(), key.begin(), ::tolower);
-    
-    static const std::map<std::string, SortField> mapping = {
-        {"title", SortField::Title}, {"author", SortField::Author},
-        {"year", SortField::Year}, {"rating", SortField::Rating},
-        {"price", SortField::Price}, {"genre", SortField::Genre},
-        {"isbn", SortField::Isbn}
-    };
-    
-    const auto it = mapping.find(key);
-    return it == mapping.end() ? SortField::Title : it->second;
+    const std::string v = normalize(value);
+    if (v == "title") return SortField::Title;
+    if (v == "author") return SortField::Author;
+    if (v == "genre") return SortField::Genre;
+    if (v == "subgenre") return SortField::Subgenre;
+    if (v == "publisher") return SortField::Publisher;
+    if (v == "year") return SortField::Year;
+    if (v == "format") return SortField::Format;
+    if (v == "rating") return SortField::Rating;
+    if (v == "price") return SortField::Price;
+    if (v == "agerating") return SortField::AgeRating;
+    if (v == "isbn") return SortField::Isbn;
+    if (v == "totalprintrun") return SortField::TotalPrintRun;
+    if (v == "signedtoprintdate") return SortField::SignedToPrintDate;
+    return SortField::Title;
 }
 
 std::string LibraryBackendService::normalize(const std::string& value) {
-    std::string result;
-    for (unsigned char c : value) {
-        if (std::isalnum(c)) result.push_back(static_cast<char>(std::tolower(c)));
-    }
-    return result;
-}
-
-// Serialization functions
-std::string escapeText(const std::string& value) {
-    std::string escaped;
+    std::string out;
     for (char c : value) {
-        switch (c) {
-            case '\\': escaped += "\\\\"; break;
-            case '\n': escaped += "\\n"; break;
-            case '\r': escaped += "\\r"; break;
-            case '=': escaped += "\\="; break;
-            default: escaped.push_back(c);
+        if (!std::isspace(static_cast<unsigned char>(c)) && c != '_' && c != '-') {
+            out += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
         }
     }
-    return escaped;
-}
-
-std::string unescapeText(const std::string& value) {
-    std::string result;
-    bool escaped = false;
-    for (char c : value) {
-        if (!escaped) {
-            if (c == '\\') { escaped = true; continue; }
-            result.push_back(c);
-            continue;
-        }
-        switch (c) {
-            case 'n': result.push_back('\n'); break;
-            case 'r': result.push_back('\r'); break;
-            default: result.push_back(c);
-        }
-        escaped = false;
-    }
-    return result;
+    return out;
 }
 
 std::string serializeBookList(const std::vector<Book>& books) {
@@ -901,53 +915,58 @@ std::string serializeBookList(const std::vector<Book>& books) {
     for (const auto& book : books) {
         out << "BEGIN_BOOK\n";
         out << "id=" << book.id << "\n";
-        out << "title=" << escapeText(book.title) << "\n";
-        out << "author=" << escapeText(book.author) << "\n";
-        out << "genre=" << escapeText(book.genre) << "\n";
-        out << "subgenre=" << escapeText(book.subgenre) << "\n";
-        out << "publisher=" << escapeText(book.publisher) << "\n";
+        out << "title=" << escapeValue(book.title) << "\n";
+        out << "author=" << escapeValue(book.author) << "\n";
+        out << "genre=" << escapeValue(book.genre) << "\n";
+        out << "subgenre=" << escapeValue(book.subgenre) << "\n";
+        out << "publisher=" << escapeValue(book.publisher) << "\n";
         out << "year=" << book.year << "\n";
-        out << "format=" << escapeText(book.format) << "\n";
+        out << "format=" << escapeValue(book.format) << "\n";
         out << "rating=" << book.rating << "\n";
         out << "price=" << book.price << "\n";
-        out << "age_rating=" << escapeText(book.ageRating) << "\n";
-        out << "isbn=" << escapeText(book.isbn) << "\n";
-        out << "total_print_run=" << book.totalPrintRun << "\n";
-        out << "signed_to_print_date=" << escapeText(book.signedToPrintDate) << "\n";
-        
-        std::string dates;
-        for (std::size_t i = 0; i < book.additionalPrintDates.size(); ++i) {
-            if (i > 0) dates += "|";
-            dates += book.additionalPrintDates[i];
-        }
-        out << "additional_print_dates=" << escapeText(dates) << "\n";
-        
-        out << "cover_image_path=" << escapeText(book.coverImagePath) << "\n";
-        out << "license_image_path=" << escapeText(book.licenseImagePath) << "\n";
-        out << "bibliographic_reference=" << escapeText(book.bibliographicReference) << "\n";
-        out << "cover_url=" << escapeText(book.coverUrl) << "\n";
-        out << "search_frequency=" << book.searchFrequency << "\n";
+        out << "age_rating=" << escapeValue(book.ageRating) << "\n";
+        out << "isbn=" << escapeValue(book.isbn) << "\n";
+        out << "total_circulation=" << book.totalPrintRun << "\n";
+        out << "print_sign_date=" << escapeValue(book.signedToPrintDate) << "\n";
+        out << "additional_prints=" << escapeValue(book.additionalPrintDates.empty() ? "[]" : book.additionalPrintDates[0]) << "\n";
+        out << "cover_image_path=" << escapeValue(book.coverImagePath) << "\n";
+        out << "license_image_path=" << escapeValue(book.licenseImagePath) << "\n";
+        out << "bibliographic_ref=" << escapeValue(book.bibliographicReference) << "\n";
         out << "END_BOOK\n";
     }
     return out.str();
 }
 
 std::optional<Book> parseBookFile(const std::string& filePath) {
-    std::ifstream input(filePath);
-    if (!input.good()) return std::nullopt;
-    
+    std::ifstream in(filePath);
+    if (!in.is_open()) {
+        return std::nullopt;
+    }
+
     Book book;
+    bool inBook = false;
     std::string line;
-    
-    while (std::getline(input, line)) {
-        if (line.empty() || line == "BEGIN_BOOK" || line == "END_BOOK") continue;
-        
+
+    while (std::getline(in, line)) {
+        if (line == "BEGIN_BOOK") {
+            inBook = true;
+            continue;
+        }
+        if (line == "END_BOOK") {
+            break;
+        }
+        if (!inBook) {
+            continue;
+        }
+
         const auto pos = line.find('=');
-        if (pos == std::string::npos) continue;
-        
-        const std::string key = trim(line.substr(0, pos));
-        const std::string value = unescapeText(line.substr(pos + 1));
-        
+        if (pos == std::string::npos) {
+            continue;
+        }
+
+        const std::string key = line.substr(0, pos);
+        const std::string value = unescapeValue(line.substr(pos + 1));
+
         if (key == "id") book.id = std::atoi(value.c_str());
         else if (key == "title") book.title = value;
         else if (key == "author") book.author = value;
@@ -960,22 +979,119 @@ std::optional<Book> parseBookFile(const std::string& filePath) {
         else if (key == "price") book.price = std::atof(value.c_str());
         else if (key == "age_rating") book.ageRating = value;
         else if (key == "isbn") book.isbn = value;
-        else if (key == "total_print_run") book.totalPrintRun = std::atoll(value.c_str());
-        else if (key == "signed_to_print_date") book.signedToPrintDate = value;
-        else if (key == "additional_print_dates") {
-            std::stringstream ss(value);
-            std::string item;
-            while (std::getline(ss, item, '|')) {
-                if (!item.empty()) book.additionalPrintDates.push_back(item);
-            }
+        else if (key == "total_circulation") book.totalPrintRun = std::atoll(value.c_str());
+        else if (key == "print_sign_date") book.signedToPrintDate = value;
+        else if (key == "additional_prints") {
+            book.additionalPrintDates.clear();
+            book.additionalPrintDates.push_back(value);
         }
         else if (key == "cover_image_path") book.coverImagePath = value;
         else if (key == "license_image_path") book.licenseImagePath = value;
-        else if (key == "bibliographic_reference") book.bibliographicReference = value;
-        else if (key == "cover_url") book.coverUrl = value;
-        else if (key == "search_frequency") book.searchFrequency = std::atof(value.c_str());
+        else if (key == "bibliographic_ref") book.bibliographicReference = value;
     }
-    
-    if (trim(book.title).empty() && trim(book.author).empty()) return std::nullopt;
+
+    if (trim(book.title).empty() || trim(book.author).empty()) {
+        return std::nullopt;
+    }
+
     return book;
+}
+
+static void printUsage() {
+    std::cout
+        << "Usage:\n"
+        << "  library_backend init\n"
+        << "  library_backend list\n"
+        << "  library_backend search <query>\n"
+        << "  library_backend sort <field> <asc|desc>\n"
+        << "  library_backend remove <id>\n"
+        << "  library_backend upsert <file.book> [--fetch-network]\n";
+}
+
+int main(int argc, char* argv[]) {
+    LibraryBackendService service;
+
+    if (argc < 2) {
+        printUsage();
+        return 1;
+    }
+
+    const std::string command = argv[1];
+
+    if (!service.initialize()) {
+        std::cerr << "Initialization failed\n";
+        return 2;
+    }
+
+    if (command == "init") {
+        std::cout << "OK\n";
+        return 0;
+    }
+
+    if (command == "list") {
+        std::cout << serializeBookList(service.allBooks());
+        return 0;
+    }
+
+    if (command == "search") {
+        if (argc < 3) {
+            std::cerr << "Missing query\n";
+            return 1;
+        }
+        std::cout << serializeBookList(service.searchBooks(argv[2]));
+        return 0;
+    }
+
+    if (command == "sort") {
+        if (argc < 4) {
+            std::cerr << "Missing sort args\n";
+            return 1;
+        }
+        const SortField field = LibraryBackendService::parseSortField(argv[2]);
+        const std::string order = LibraryBackendService::normalize(argv[3]);
+        const bool asc = order != "desc";
+        std::cout << serializeBookList(service.sortedBooks(field, asc));
+        return 0;
+    }
+
+    if (command == "remove") {
+        if (argc < 3) {
+            std::cerr << "Missing id\n";
+            return 1;
+        }
+        const int id = std::atoi(argv[2]);
+        if (!service.removeBookById(id)) {
+            std::cerr << "Remove failed\n";
+            return 3;
+        }
+        std::cout << "OK\n";
+        return 0;
+    }
+
+    if (command == "upsert") {
+        if (argc < 3) {
+            std::cerr << "Missing .book file\n";
+            return 1;
+        }
+
+        auto parsed = parseBookFile(argv[2]);
+        if (!parsed.has_value()) {
+            std::cerr << "Invalid book file\n";
+            return 4;
+        }
+
+        Book book = parsed.value();
+        const bool fetchNetwork = argc >= 4 && std::string(argv[3]) == "--fetch-network";
+
+        if (!service.addOrUpdateBook(book, fetchNetwork)) {
+            std::cerr << "Upsert failed\n";
+            return 5;
+        }
+
+        std::cout << "Book saved with id=" << book.id << "\n";
+        return 0;
+    }
+
+    printUsage();
+    return 1;
 }
