@@ -1,8 +1,9 @@
 #pragma once
+
+#include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
-#include <optional>
-#include <cstdint>
 
 struct Book {
     int id = 0;
@@ -28,8 +29,19 @@ struct Book {
 };
 
 enum class SortField {
-    Title, Author, Genre, Subgenre, Publisher, Year, Format,
-    Rating, Price, AgeRating, Isbn, TotalPrintRun, SignedToPrintDate
+    Title,
+    Author,
+    Genre,
+    Subgenre,
+    Publisher,
+    Year,
+    Format,
+    Rating,
+    Price,
+    AgeRating,
+    Isbn,
+    TotalPrintRun,
+    SignedToPrintDate
 };
 
 struct ObstNode {
@@ -48,22 +60,22 @@ class LibraryStorage {
 public:
     explicit LibraryStorage(std::string connectionString);
     ~LibraryStorage();
-    
+
     bool open();
     bool ensureSchema();
-    
+
     std::vector<Book> allBooks() const;
     std::vector<Book> searchBooks(const std::string& query) const;
     std::vector<Book> sortedBooks(SortField field, bool ascending) const;
-    
+
     bool upsertBook(Book& book);
     bool removeBookById(int id);
     bool isEmpty() const;
-    
+
 private:
     std::string connectionString_;
     void* db_ = nullptr;
-    
+
     bool execute(const std::string& sql) const;
     bool ensureGenreHierarchy(const Book& book) const;
     static Book readBookFromStatement(void* statement);
@@ -72,21 +84,22 @@ private:
 class LibraryBackendService {
 public:
     explicit LibraryBackendService(LibraryStorage storage);
-    
+
     bool initialize();
     bool addOrUpdateBook(Book& book, bool fetchFromNetwork);
     bool removeBookById(int id);
-    
+
     std::vector<Book> searchBooks(const std::string& query) const;
     std::vector<Book> sortedBooks(SortField field, bool ascending) const;
     std::vector<Book> allBooks() const;
     std::vector<ObstNode> buildOptimalSearchTreeByIsbn() const;
-    
+
     static SortField parseSortField(const std::string& value);
-    
+
 private:
     LibraryStorage storage_;
     NetworkMetadataClient networkClient_;
+
     static std::string normalize(const std::string& value);
 };
 

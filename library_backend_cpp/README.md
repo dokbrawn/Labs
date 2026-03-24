@@ -12,8 +12,6 @@
 - создает структуру `genres -> subgenres -> books` в PostgreSQL;
 - при первом `init` автоматически заполняет пустую БД демонстрационным набором книг;
 - поддерживает офлайн-режим и сетевые флаги через переменные окружения (`OFFLINE_MODE`, `LIBRARY_ENABLE_NET`);
-- пишет события в `library.log` рядом с БД, с fallback-поведением при сетевых ошибках API;
-- создает `library.db.backup` (еженедельный бэкап) и восстанавливается при повреждении БД через `library.db.bak`;
 - поддерживает команды:
   - `init`
   - `list`
@@ -51,7 +49,8 @@
 ## Что уже считается БД и СУБД в проекте
 - **СУБД**: используется **PostgreSQL**.
 - **БД**: PostgreSQL-база, задаваемая строкой подключения `LIBRARY_PG_CONN`.
-- **Обложки и файлы**: картинки для книг сохраняются в локальные папки (`covers/`, `licenses/`), а путь к ним хранится в БД.
+- **library.db**: локальный marker-файл в `LIBRARY_DATA_PATH` (или в рабочей папке), чтобы соблюсти файловую структуру проекта рядом с `images/` и `library.log`.
+- **Обложки и файлы**: картинки для книг сохраняются в локальную папку `images/`, а путь к ним хранится в БД.
 
 ## Почему такие решения
 - **PostgreSQL**: соответствует целевому стеку ТЗ и дает строгую SQL-схему/ограничения.
@@ -80,6 +79,7 @@ cmake --build build
 ## Переменные окружения backend
 
 - `LIBRARY_PG_CONN` — строка подключения PostgreSQL (`host=... port=... dbname=... user=... password=...`).
+- `LIBRARY_DATA_PATH` — путь к папке с локальными файлами (`library.db`, `library.db.backup`, `library.log`, `images/`).
 - `LIBRARY_ENABLE_NET` — `false` полностью отключает API-запросы.
 - `OFFLINE_MODE` — `true` принудительно включает офлайн-режим (API не вызывается).
 
@@ -88,6 +88,25 @@ cmake --build build
 ```bash
 cd rust_gui
 cargo run
+```
+
+Rust GUI теперь напрямую управляет C++ backend:
+- выполняет `init` (создание схемы PostgreSQL);
+- показывает список (`list`);
+- ищет (`search`);
+- добавляет книги (`upsert`);
+- удаляет книги (`remove`).
+
+Перед запуском рекомендуется задать строку подключения:
+
+```bash
+export LIBRARY_PG_CONN="host=localhost port=5432 dbname=library user=postgres password=123"
+```
+
+или в PowerShell:
+
+```powershell
+$env:LIBRARY_PG_CONN = "host=localhost port=5432 dbname=library user=postgres password=123"
 ```
 
 ## Запуск Python GUI (legacy)

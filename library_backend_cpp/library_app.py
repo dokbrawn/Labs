@@ -2,7 +2,7 @@
 LibraryDB — десктопное приложение на Python + tkinter
 СУБД: вложенная БД Жанр → Поджанр → Книги
 Алгоритмы: MergeSort, бинарный поиск, дерево оптимального поиска
-Хранение: JSON на диске
+Хранение: PostgreSQL через C++ backend CLI
 Сеть: Open Library API (обложки + метаданные при добавлении)
 """
 
@@ -25,12 +25,6 @@ try:
 except ImportError:
     PIL_OK = False
 
-def ellipsize(text: str, max_length: int) -> str:
-    """Truncate long text and add '...' (used for card titles)."""
-    if len(text) <= max_length:
-        return text
-    return text[:max_length - 3] + "..."
-
 try:
     import urllib.request
     import urllib.parse
@@ -40,11 +34,10 @@ except ImportError:
 
 # ── Пути и константы ─────────────────────────────────────────────
 BASE_DIR   = Path(__file__).parent
-DATA_FILE  = BASE_DIR / "library_data.json"
-COVERS_DIR = BASE_DIR / "covers"
-COVERS_DIR.mkdir(exist_ok=True)
-LICENSES_DIR = BASE_DIR / "licenses"
-LICENSES_DIR.mkdir(exist_ok=True)
+IMAGES_DIR = BASE_DIR / "images"
+IMAGES_DIR.mkdir(exist_ok=True)
+COVERS_DIR = IMAGES_DIR
+LICENSES_DIR = IMAGES_DIR
 BUILD_DIR = BASE_DIR / "build"
 BACKEND_NAME = "library_backend.exe" if os.name == "nt" else "library_backend"
 
@@ -197,7 +190,19 @@ def ensure_backend_ready():
 def _backend_cmd(*args):
     ensure_backend_ready()
     backend_bin = resolve_backend_bin()
-    completed = subprocess.run([str(backend_bin), *map(str, args)], cwd=BASE_DIR, text=True, capture_output=True, check=True)
+    env = os.environ.copy()
+    env.setdefault("LIBRARY_PG_CONN", "host=localhost port=5432 dbname=library user=postgres password=postgres")
+    completed = subprocess.run(
+        [str(backend_bin), *map(str, args)],
+        cwd=BASE_DIR,
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+    if completed.returncode != 0:
+        stderr = completed.stderr.strip() or completed.stdout.strip() or f"exit={completed.returncode}"
+        raise RuntimeError(f"Команда backend {' '.join(map(str, args))} завершилась ошибкой: {stderr}")
     return completed.stdout
 
 
@@ -1184,7 +1189,17 @@ class LibraryApp(tk.Tk):
         self.minsize(900, 600)
         self.configure(bg=T["bg"])
 
-        self._data        = load_data()
+        try:
+            self._data = load_data()
+        except Exception as exc:
+            messagebox.showerror(
+                "Ошибка подключения к PostgreSQL",
+                "Не удалось инициализировать backend.\n"
+                "Проверьте LIBRARY_PG_CONN и доступность PostgreSQL.\n\n"
+                f"Технические детали:\n{exc}",
+                parent=self
+            )
+            raise
         self._all_books   = self._data["books"]
         self._photos      = {}        # id → PhotoImage (keep refs)
         self._sel_genre   = None

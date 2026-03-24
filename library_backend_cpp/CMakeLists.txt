@@ -5,42 +5,70 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# PostgreSQL
+set(PostgreSQL_ROOT "C:/Program Files/PostgreSQL/18" CACHE PATH "PostgreSQL installation path")
 find_package(PostgreSQL REQUIRED)
 
-add_executable(library_backend
+# Исходные файлы
+set(SOURCES
     src/main.cpp
     src/library_backend.cpp
 )
 
-add_executable(library_backend_console
+set(CONSOLE_SOURCES
     src/console_menu.cpp
     src/library_backend.cpp
 )
 
-target_include_directories(library_backend PRIVATE src)
-target_include_directories(library_backend_console PRIVATE src)
-target_link_libraries(library_backend PRIVATE PostgreSQL::PostgreSQL)
-target_link_libraries(library_backend_console PRIVATE PostgreSQL::PostgreSQL)
+set(HEADERS
+    src/library_backend.h
+)
 
+# Исполняемые файлы
+add_executable(library_backend ${SOURCES} ${HEADERS})
+add_executable(library_backend_console ${CONSOLE_SOURCES} ${HEADERS})
+
+# Подключение заголовков
+target_include_directories(library_backend PRIVATE 
+    ${CMAKE_SOURCE_DIR}/src
+    ${PostgreSQL_INCLUDE_DIRS}
+)
+
+target_include_directories(library_backend_console PRIVATE 
+    ${CMAKE_SOURCE_DIR}/src
+    ${PostgreSQL_INCLUDE_DIRS}
+)
+
+# Подключение библиотек
+target_link_libraries(library_backend PRIVATE 
+    ${PostgreSQL_LIBRARIES}
+    ws2_32
+    wsock32
+)
+
+target_link_libraries(library_backend_console PRIVATE 
+    ${PostgreSQL_LIBRARIES}
+    ws2_32
+    wsock32
+)
+
+# Выходные директории
 set_target_properties(library_backend PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}"
-    RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}"
-    RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_BINARY_DIR}"
 )
 
 set_target_properties(library_backend_console PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}"
-    RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}"
-    RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_BINARY_DIR}"
 )
 
+# Копирование DLL для Windows
 if(WIN32)
     file(GENERATE
-        OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/copy_runtime_dlls_backend_$<CONFIG>.cmake"
+        OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/copy_runtime_dlls_$<CONFIG>.cmake"
         CONTENT [=[
 set(runtime_dlls "$<JOIN:$<TARGET_RUNTIME_DLLS:library_backend>,;>")
 if(NOT runtime_dlls STREQUAL "")
@@ -51,25 +79,7 @@ if(NOT runtime_dlls STREQUAL "")
 endif()
 ]=]
     )
-
     add_custom_command(TARGET library_backend POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -P "${CMAKE_CURRENT_BINARY_DIR}/copy_runtime_dlls_backend_$<CONFIG>.cmake"
-    )
-
-    file(GENERATE
-        OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/copy_runtime_dlls_console_$<CONFIG>.cmake"
-        CONTENT [=[
-set(runtime_dlls "$<JOIN:$<TARGET_RUNTIME_DLLS:library_backend_console>,;>")
-if(NOT runtime_dlls STREQUAL "")
-    execute_process(
-        COMMAND "${CMAKE_COMMAND}" -E copy_if_different ${runtime_dlls} "$<TARGET_FILE_DIR:library_backend_console>"
-        COMMAND_ERROR_IS_FATAL ANY
-    )
-endif()
-]=]
-    )
-
-    add_custom_command(TARGET library_backend_console POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -P "${CMAKE_CURRENT_BINARY_DIR}/copy_runtime_dlls_console_$<CONFIG>.cmake"
+        COMMAND ${CMAKE_COMMAND} -P "${CMAKE_CURRENT_BINARY_DIR}/copy_runtime_dlls_$<CONFIG>.cmake"
     )
 endif()

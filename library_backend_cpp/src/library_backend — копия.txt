@@ -7,13 +7,9 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
-#include <functional>
 #include <iomanip>
 #include <libpq-fe.h>
-#include <limits>
-#include <map>
 #include <sstream>
-#include <string>
 #include <thread>
 
 #ifdef _WIN32
@@ -22,7 +18,6 @@
 #endif
 
 namespace {
-
 std::string trim(const std::string& value) {
     const auto begin = value.find_first_not_of(" \t\r\n");
     if (begin == std::string::npos) return {};
@@ -46,49 +41,29 @@ void appendLog(const std::string& level, const std::string& message) {
 #endif
         out << std::put_time(&tm, "%Y-%m-%d %H:%M:%S")
             << " [" << level << "] " << message << "\n";
-        out.flush();
     } catch (...) {}
 }
 
 std::string readCommandOutput(const std::string& command) {
-    appendLog("DEBUG", "Executing command: " + command);
-    
-    std::array<char, 1024> buffer{};
+    std::array<char, 512> buffer{};
     std::string result;
     FILE* pipe = popen(command.c_str(), "r");
-    if (!pipe) {
-        appendLog("ERROR", "popen failed for command");
-        return {};
-    }
+    if (!pipe) return {};
     
     while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe) != nullptr) {
         result += buffer.data();
     }
-    
-    int code = pclose(pipe);
-    appendLog("DEBUG", "Command exit code: " + std::to_string(code));
-    
+    pclose(pipe);
     return result;
 }
 
-// ИСПРАВЛЕНО: Правильное экранирование для Windows PowerShell
 std::string shellEscape(const std::string& value) {
-    // Для PowerShell используем двойные кавычки с экранированием
-    std::string escaped = "\"";
+    std::string escaped = "'";
     for (char c : value) {
-        if (c == '"') {
-            escaped += "\\\"";
-        } else if (c == '\\') {
-            escaped += "\\\\";
-        } else if (c == '$') {
-            escaped += "`$";  // PowerShell escape
-        } else if (c == '`') {
-            escaped += "``";  // PowerShell escape
-        } else {
-            escaped.push_back(c);
-        }
+        if (c == '\'') escaped += "'\\''";
+        else escaped.push_back(c);
     }
-    escaped.push_back('"');
+    escaped.push_back('\'');
     return escaped;
 }
 
@@ -145,7 +120,7 @@ bool isNetworkEnabled() {
 std::string defaultPgConn() {
     const char* conn = std::getenv("LIBRARY_PG_CONN");
     if (conn != nullptr && std::string(conn).size() > 0) return conn;
-    return "host=localhost port=5432 dbname=library user=postgres password=123";
+    return "host=localhost port=5432 dbname=library user=postgres password=postgres";
 }
 
 bool pgOk(PGresult* result) {
@@ -179,6 +154,7 @@ Book rowToBook(PGresult* result, int row) {
     book.totalPrintRun = std::atoll(val(12).c_str());
     book.signedToPrintDate = val(13);
     
+    // Parse additional_print_dates
     std::string dates = val(14);
     if (!dates.empty()) {
         std::stringstream ss(dates);
@@ -229,9 +205,6 @@ LEFT JOIN genres ON genres.id = subgenres.genre_id
 bool runExec(PGconn* conn, const std::string& sql) {
     PGresult* result = PQexec(conn, sql.c_str());
     const bool ok = pgOk(result);
-    if (!ok) {
-        appendLog("ERROR", "SQL failed: " + sql + " | Error: " + std::string(PQerrorMessage(conn)));
-    }
     PQclear(result);
     return ok;
 }
@@ -246,11 +219,7 @@ std::vector<Book> runSelectBooks(PGconn* conn, const std::string& sql, const std
         values.empty() ? nullptr : values.data(), nullptr, nullptr, 0);
     
     std::vector<Book> books;
-    if (!pgOk(result)) { 
-        appendLog("ERROR", "Select failed: " + std::string(PQerrorMessage(conn)));
-        PQclear(result); 
-        return books; 
-    }
+    if (!pgOk(result)) { PQclear(result); return books; }
     
     const int rows = PQntuples(result);
     books.reserve(rows);
@@ -261,37 +230,22 @@ std::vector<Book> runSelectBooks(PGconn* conn, const std::string& sql, const std
 }
 
 int fetchOrCreateGenreId(PGconn* conn, const std::string& genre) {
-    if (trim(genre).empty()) {
-        appendLog("DEBUG", "Empty genre, returning 0");
-        return 0;
-    }
-    
-    appendLog("DEBUG", "Creating/fetching genre: " + genre);
+    if (trim(genre).empty()) return 0;
     
     const char* values[] = {genre.c_str()};
     PGresult* result = PQexecParams(conn,
         "INSERT INTO genres(name) VALUES($1) ON CONFLICT(name) DO UPDATE SET name=EXCLUDED.name RETURNING id;",
         1, nullptr, values, nullptr, nullptr, 0);
     
-    if (!pgOk(result) || PQntuples(result) == 0) { 
-        appendLog("ERROR", "Genre insert failed: " + std::string(PQerrorMessage(conn)));
-        PQclear(result); 
-        return 0; 
-    }
+    if (!pgOk(result) || PQntuples(result) == 0) { PQclear(result); return 0; }
     
     const int id = std::atoi(PQgetvalue(result, 0, 0));
     PQclear(result);
-    appendLog("DEBUG", "Genre ID: " + std::to_string(id));
     return id;
 }
 
 int fetchOrCreateSubgenreId(PGconn* conn, int genreId, const std::string& subgenre) {
-    if (genreId <= 0 || trim(subgenre).empty()) {
-        appendLog("DEBUG", "Invalid genreId or empty subgenre");
-        return 0;
-    }
-    
-    appendLog("DEBUG", "Creating/fetching subgenre: " + subgenre + " (genre_id=" + std::to_string(genreId) + ")");
+    if (genreId <= 0 || trim(subgenre).empty()) return 0;
     
     const std::string g = std::to_string(genreId);
     const char* values[] = {g.c_str(), subgenre.c_str()};
@@ -299,24 +253,20 @@ int fetchOrCreateSubgenreId(PGconn* conn, int genreId, const std::string& subgen
         "INSERT INTO subgenres(genre_id,name) VALUES($1::int,$2) ON CONFLICT(genre_id,name) DO UPDATE SET name=EXCLUDED.name RETURNING id;",
         2, nullptr, values, nullptr, nullptr, 0);
     
-    if (!pgOk(result) || PQntuples(result) == 0) { 
-        appendLog("ERROR", "Subgenre insert failed: " + std::string(PQerrorMessage(conn)));
-        PQclear(result); 
-        return 0; 
-    }
+    if (!pgOk(result) || PQntuples(result) == 0) { PQclear(result); return 0; }
     
     const int id = std::atoi(PQgetvalue(result, 0, 0));
     PQclear(result);
-    appendLog("DEBUG", "Subgenre ID: " + std::to_string(id));
     return id;
 }
 
 std::vector<Book> demoBooks() {
     std::vector<Book> books;
     
+    // UTF-8 encoded demo books (исправленная кодировка)
     auto makeBook = [&](const char* title, const char* author, const char* genre, 
                         const char* subgenre, const char* publisher, int year,
-                        double rating, double price, const char* isbn) {
+                        double rating, double price, const char* isbn, const char* coverUrl) {
         Book book;
         book.title = title;
         book.author = author;
@@ -327,17 +277,32 @@ std::vector<Book> demoBooks() {
         book.rating = rating;
         book.price = price;
         book.isbn = isbn;
+        book.coverUrl = coverUrl;
         book.searchFrequency = rating;
         book.ageRating = "12+";
         book.format = "70x100/16";
         return book;
     };
     
-    books.push_back(makeBook("1984", "George Orwell", "Fiction", "Novel", 
-                             "AST", 1949, 4.7, 420.0, "978-5-17-108831-3"));
+    books.push_back(makeBook("1984", "Джордж Оруэлл", "Художественная", "Роман", 
+                             "АСТ", 1949, 4.7, 420.0, "978-5-17-108831-3",
+                             "https://covers.openlibrary.org/b/id/8575708-L.jpg"));
     
-    books.push_back(makeBook("Clean Code", "Robert Martin", "Technical", "Programming",
-                             "Piter", 2008, 4.6, 1200.0, "978-5-4461-0960-9"));
+    books.push_back(makeBook("Война и мир", "Лев Толстой", "Историческая", "Новое время",
+                             "АСТ", 1869, 4.6, 1100.0, "978-5-17-119218-3",
+                             "https://covers.openlibrary.org/b/id/9255566-L.jpg"));
+    
+    books.push_back(makeBook("Преступление и наказание", "Ф. Достоевский", "Художественная", "Роман",
+                             "Азбука", 1866, 4.7, 450.0, "978-5-08-006491-5",
+                             "https://covers.openlibrary.org/b/id/8739200-L.jpg"));
+    
+    books.push_back(makeBook("Clean Code", "Robert C. Martin", "Техническая", "Программирование",
+                             "Питер", 2008, 4.6, 1200.0, "978-5-4461-0960-9",
+                             "https://covers.openlibrary.org/b/id/8950546-L.jpg"));
+    
+    books.push_back(makeBook("Мастер и Маргарита", "Михаил Булгаков", "Художественная", "Роман",
+                             "Эксмо", 1967, 4.9, 590.0, "978-5-04-116270-1",
+                             "https://covers.openlibrary.org/b/id/12192618-L.jpg"));
     
     return books;
 }
@@ -417,10 +382,7 @@ bool LibraryStorage::execute(const std::string& sql) const {
 
 bool LibraryStorage::ensureGenreHierarchy(const Book& book) const {
     PGconn* conn = static_cast<PGconn*>(db_);
-    if (trim(book.genre).empty() || trim(book.subgenre).empty()) {
-        appendLog("DEBUG", "Empty genre/subgenre, skipping hierarchy");
-        return true;
-    }
+    if (trim(book.genre).empty() || trim(book.subgenre).empty()) return true;
     
     const int genreId = fetchOrCreateGenreId(conn, book.genre);
     if (genreId <= 0) return false;
@@ -440,12 +402,14 @@ std::vector<Book> LibraryStorage::searchBooks(const std::string& query) const {
     PGconn* conn = static_cast<PGconn*>(db_);
     const std::string q = "%" + query + "%";
     
+    // Priority: title first
     auto byTitle = runSelectBooks(conn,
         baseSelectSql() + " WHERE lower(books.title) LIKE lower($1) ORDER BY lower(books.title), books.id;",
         {q});
     
     if (!byTitle.empty()) return byTitle;
     
+    // Then: author
     return runSelectBooks(conn,
         baseSelectSql() + " WHERE lower(books.author) LIKE lower($1) ORDER BY lower(books.author), books.id;",
         {q});
@@ -468,27 +432,13 @@ std::vector<Book> LibraryStorage::sortedBooks(SortField field, bool ascending) c
 
 bool LibraryStorage::upsertBook(Book& book) {
     PGconn* conn = static_cast<PGconn*>(db_);
-    
-    appendLog("DEBUG", "=== Starting upsert ===");
-    appendLog("DEBUG", "Book title: " + book.title);
-    appendLog("DEBUG", "Book author: " + book.author);
-    appendLog("DEBUG", "Book genre: " + book.genre);
-    appendLog("DEBUG", "Book subgenre: " + book.subgenre);
-    
-    if (!runExec(conn, "BEGIN;")) {
-        appendLog("ERROR", "BEGIN transaction failed");
-        return false;
-    }
+    if (!runExec(conn, "BEGIN;")) return false;
     
     const int genreId = fetchOrCreateGenreId(conn, book.genre);
-    appendLog("DEBUG", "Genre ID result: " + std::to_string(genreId));
-    
     const int subgenreId = fetchOrCreateSubgenreId(conn, genreId, book.subgenre);
-    appendLog("DEBUG", "Subgenre ID result: " + std::to_string(subgenreId));
     
     const std::string id = book.id > 0 ? std::to_string(book.id) : "";
     const std::string sid = subgenreId > 0 ? std::to_string(subgenreId) : "";
-    
     const std::string additional = [&]() {
         std::string result;
         for (std::size_t i = 0; i < book.additionalPrintDates.size(); ++i) {
@@ -508,8 +458,6 @@ bool LibraryStorage::upsertBook(Book& book) {
         book.bibliographicReference.c_str(), book.coverUrl.c_str(),
         std::to_string(book.searchFrequency).c_str()
     };
-    
-    appendLog("DEBUG", "Executing INSERT/UPDATE query");
     
     PGresult* result = PQexecParams(conn, R"SQL(
 INSERT INTO books(id, subgenre_id, title, author, publisher, year, format, rating, price,
@@ -531,15 +479,8 @@ ON CONFLICT(id) DO UPDATE SET
 RETURNING id;
 )SQL", 19, nullptr, values, nullptr, nullptr, 0);
     
-    if (!pgOk(result)) {
-        appendLog("ERROR", "Book upsert SQL failed: " + std::string(PQerrorMessage(conn)));
-        PQclear(result);
-        runExec(conn, "ROLLBACK;");
-        return false;
-    }
-    
-    if (PQntuples(result) == 0) {
-        appendLog("ERROR", "Book upsert returned no rows");
+    if (!pgOk(result) || PQntuples(result) == 0) {
+        appendLog("ERROR", "Book upsert failed");
         PQclear(result);
         runExec(conn, "ROLLBACK;");
         return false;
@@ -547,14 +488,7 @@ RETURNING id;
     
     book.id = std::atoi(PQgetvalue(result, 0, 0));
     PQclear(result);
-    
-    if (!runExec(conn, "COMMIT;")) {
-        appendLog("ERROR", "COMMIT failed");
-        return false;
-    }
-    
-    appendLog("DEBUG", "=== Upsert complete, book ID: " + std::to_string(book.id) + " ===");
-    return true;
+    return runExec(conn, "COMMIT;");
 }
 
 bool LibraryStorage::removeBookById(int id) {
@@ -582,7 +516,7 @@ bool LibraryStorage::isEmpty() const {
     return empty;
 }
 
-// NetworkMetadataClient - OpenLibrary API (ИСПРАВЛЕНО для Windows)
+// NetworkMetadataClient implementation
 std::optional<Book> NetworkMetadataClient::fetchByQuery(const Book& draft) const {
     if (!isNetworkEnabled()) {
         appendLog("INFO", "Network disabled, skipping API fetch");
@@ -596,47 +530,24 @@ std::optional<Book> NetworkMetadataClient::fetchByQuery(const Book& draft) const
     }
     
     query = trim(query);
-    if (query.empty()) {
-        appendLog("WARN", "Empty query for API");
-        return std::nullopt;
-    }
+    if (query.empty()) return std::nullopt;
     
-    // URL-encoding - БЕЗ ПРОБЕЛОВ в fields!
-    std::string encoded;
-    for (char c : query) {
-        if (c == ' ') encoded += "+";
-        else if (c == '"' || c == '<' || c == '>' || c == '&' || c == '#') {
-            char hex[4];
-            snprintf(hex, sizeof(hex), "%%%02X", static_cast<unsigned char>(c));
-            encoded += hex;
-        }
-        else encoded += c;
-    }
+    std::string encoded = query;
+    std::replace(encoded.begin(), encoded.end(), ' ', '+');
     
-    // ИСПРАВЛЕНО: Нет пробелов в fields parameter!
     const std::string url = "https://openlibrary.org/search.json?q=" + encoded + 
         "&limit=1&fields=title,author_name,first_publish_year,isbn,publisher,cover_i";
     
-    appendLog("INFO", "API URL: " + url);
-    
     // Retry logic (3 attempts)
     for (int attempt = 1; attempt <= 3; ++attempt) {
-        // ИСПРАВЛЕНО: Правильная команда curl для Windows PowerShell
-        // Используем двойные кавычки и правильный формат
-        const std::string command = "curl -sS --max-time 10 "
-            "-H \"User-Agent: LibraryBackendCPP/1.0\" "
-            "\"" + url + "\" "
-            "-w \"`n__HTTP_CODE__:%{http_code}`n\"";
-        
-        appendLog("INFO", "Executing curl (attempt " + std::to_string(attempt) + ")");
+        const std::string command = "curl -sS --max-time 5 -H 'User-Agent: LibraryBackendCPP/1.0' " + 
+            shellEscape(url) + " -w '\n__HTTP_CODE__:%{http_code}\n'";
         
         const std::string raw = readCommandOutput(command);
-        appendLog("INFO", "Curl response length: " + std::to_string(raw.size()));
-        
         if (raw.empty()) {
             if (attempt < 3) {
                 appendLog("WARN", "API request failed, retry " + std::to_string(attempt));
-                std::this_thread::sleep_for(std::chrono::seconds(2));
+                std::this_thread::sleep_for(std::chrono::seconds(1));
             }
             continue;
         }
@@ -652,8 +563,6 @@ std::optional<Book> NetworkMetadataClient::fetchByQuery(const Book& draft) const
             response = raw.substr(0, markerPos);
             httpCode = std::atoi(trim(raw.substr(markerPos + 15)).c_str());
         }
-        
-        appendLog("INFO", "HTTP Code: " + std::to_string(httpCode));
         
         if (httpCode == 200) {
             Book remote;
@@ -682,10 +591,7 @@ std::optional<Book> NetworkMetadataClient::fetchByQuery(const Book& draft) const
             return std::nullopt;
         }
         
-        if (attempt < 3) {
-            appendLog("WARN", "Retrying...");
-            std::this_thread::sleep_for(std::chrono::seconds(1));
-        }
+        if (attempt < 3) std::this_thread::sleep_for(std::chrono::seconds(1));
     }
     
     appendLog("WARN", "API unavailable after 3 attempts, using manual data");
@@ -697,29 +603,32 @@ LibraryBackendService::LibraryBackendService(LibraryStorage storage)
     : storage_(std::move(storage)) {}
 
 bool LibraryBackendService::initialize() {
-    appendLog("INFO", "=== Starting initialization ===");
+    appendLog("INFO", "Starting backend initialization...");
     
     if (!storage_.open()) {
         appendLog("ERROR", "Storage open failed");
         return false;
     }
     
-    appendLog("INFO", "Storage opened successfully");
-    appendLog("INFO", "=== Initialization complete ===");
+    if (!storage_.isEmpty()) {
+        appendLog("INFO", "Database not empty, skipping demo data");
+        return true;
+    }
     
+    appendLog("INFO", "Inserting demo books...");
+    for (auto& book : demoBooks()) {
+        if (!storage_.upsertBook(book)) {
+            appendLog("ERROR", "Failed to insert demo book: " + book.title);
+            return false;
+        }
+    }
+    
+    appendLog("INFO", "Initialization complete");
     return true;
 }
 
 bool LibraryBackendService::addOrUpdateBook(Book& book, bool fetchFromNetwork) {
-    appendLog("INFO", "=== addOrUpdateBook called ===");
-    appendLog("INFO", "fetchFromNetwork: " + std::string(fetchFromNetwork ? "true" : "false"));
-    appendLog("INFO", "Book title: " + book.title);
-    appendLog("INFO", "Book author: " + book.author);
-    appendLog("INFO", "Book genre: " + book.genre);
-    appendLog("INFO", "Book subgenre: " + book.subgenre);
-    
-    if (fetchFromNetwork && isNetworkEnabled()) {
-        appendLog("INFO", "Fetching metadata from OpenLibrary API...");
+    if (fetchFromNetwork) {
         const auto remote = networkClient_.fetchByQuery(book);
         if (remote.has_value()) {
             if (book.title.empty()) book.title = remote->title;
@@ -728,20 +637,14 @@ bool LibraryBackendService::addOrUpdateBook(Book& book, bool fetchFromNetwork) {
             if (book.year == 0) book.year = remote->year;
             if (book.isbn.empty()) book.isbn = remote->isbn;
             if (book.coverUrl.empty()) book.coverUrl = remote->coverUrl;
-            appendLog("INFO", "API data merged successfully");
-        } else {
-            appendLog("WARN", "API fetch failed, using manual data");
         }
     }
     
     if (trim(book.title).empty() || trim(book.author).empty()) {
-        appendLog("ERROR", "Empty title or author");
         return false;
     }
     
-    bool result = storage_.upsertBook(book);
-    appendLog("INFO", "Book upsert result: " + std::string(result ? "SUCCESS" : "FAILED"));
-    return result;
+    return storage_.upsertBook(book);
 }
 
 bool LibraryBackendService::removeBookById(int id) {
@@ -768,6 +671,7 @@ std::vector<ObstNode> LibraryBackendService::buildOptimalSearchTreeByIsbn() cons
     const int n = static_cast<int>(books.size());
     if (n == 0) return {};
     
+    // OBST implementation
     std::vector<std::vector<double>> cost(n, std::vector<double>(n, 0.0));
     std::vector<std::vector<int>> root(n, std::vector<int>(n, -1));
     std::vector<double> prefix(n + 1, 0.0);
