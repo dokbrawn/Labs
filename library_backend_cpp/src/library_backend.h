@@ -56,6 +56,16 @@ struct ObstNode {
     int right = -1;
 };
 
+struct OpenLibraryCandidate {
+    std::string title;
+    std::string author;
+    std::string publisher;
+    std::string language;
+    std::string isbn;
+    std::string coverUrl;
+    int year = 0;
+};
+
 class LibraryStorage {
 public:
     explicit LibraryStorage(std::string connectionString = "");
@@ -100,6 +110,7 @@ public:
     std::vector<Book> searchBooks(const std::string& query) const;
 
     std::vector<ObstNode> buildOptimalSearchTreeByIsbn() const;
+    std::vector<OpenLibraryCandidate> lookupOpenLibrary(const std::string& query, int limit = 15) const;
 
     static SortField parseSortField(const std::string& value);
     static std::string normalize(const std::string& value);
@@ -109,4 +120,5 @@ private:
 };
 
 std::string serializeBookList(const std::vector<Book>& books);
+std::string serializeOpenLibraryCandidates(const std::vector<OpenLibraryCandidate>& candidates);
 std::optional<Book> parseBookFile(const std::string& filePath);

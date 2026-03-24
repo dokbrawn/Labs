@@ -98,7 +98,7 @@ void printBook(const Book& book) {
               << ", Возраст: " << (book.ageRating.empty() ? "-" : book.ageRating) << "\n"
               << "  Тираж: " << book.totalPrintRun
               << ", Дата подписи в печать: " << (book.signedToPrintDate.empty() ? "-" : book.signedToPrintDate) << "\n"
-              << "  Обложка: " << (book.coverImagePath.empty() ? (book.coverUrl.empty() ? "-" : book.coverUrl) : book.coverImagePath) << "\n"
+              << "  Обложка: " << (book.coverImagePath.empty() ? "-" : book.coverImagePath) << "\n"
               << "  Лицензия: " << (book.licenseImagePath.empty() ? "-" : book.licenseImagePath) << "\n";
 
     if (!book.additionalPrintDates.empty()) {
@@ -153,8 +153,6 @@ Book promptBook(int existingId = 0) {
     book.coverImagePath = readLine("Путь к файлу обложки: ");
     book.licenseImagePath = readLine("Путь к фото лицензии: ");
     book.bibliographicReference = readLine("Библиографическая ссылка: ");
-    book.coverUrl = readLine("URL обложки (если есть): ");
-    book.searchFrequency = readDouble("Частота поиска для OBST (по умолчанию 1): ", 1.0);
 
     return book;
 }
@@ -273,7 +271,7 @@ int main() {
             std::cout << "\n=== OBST ===\n";
             std::cout << "Узлов: " << nodes.size() << "\n";
             for (const auto& node : nodes) {
-                std::cout << "key=" << node.key << ",book_id=" << node.bookId
+                std::cout << "key=" << node.isbn << ",book_id=" << node.bookId
                           << ",left=" << node.left << ",right=" << node.right << "\n";
             }
             break;

@@ -1,4 +1,5 @@
 #include "library_backend.h"
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <cstdlib>
@@ -21,6 +22,7 @@ void printUsage() {
         << "  library_backend init\n"
         << "  library_backend list\n"
         << "  library_backend search <query>\n"
+        << "  library_backend lookup <query> [limit]\n"
         << "  library_backend sort <field> <asc|desc>\n"
         << "  library_backend upsert <book_file> [--fetch-network]\n"
         << "  library_backend remove <id>\n"
@@ -64,6 +66,19 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         std::cout << serializeBookList(service.searchBooks(argv[2]));
+        return 0;
+    }
+
+    if (command == "lookup") {
+        if (argc < 3) {
+            std::cerr << "error=missing_query\n";
+            return 1;
+        }
+        int limit = 15;
+        if (argc >= 4) {
+            limit = std::max(1, std::stoi(argv[3]));
+        }
+        std::cout << serializeOpenLibraryCandidates(service.lookupOpenLibrary(argv[2], limit));
         return 0;
     }
     
@@ -122,7 +137,7 @@ int main(int argc, char* argv[]) {
     if (command == "obst") {
         const auto nodes = service.buildOptimalSearchTreeByIsbn();
         for (const auto& node : nodes) {
-            std::cout << "key=" << node.key << ",book_id=" << node.bookId
+            std::cout << "key=" << node.isbn << ",book_id=" << node.bookId
                 << ",left=" << node.left << ",right=" << node.right << "\n";
         }
         return 0;

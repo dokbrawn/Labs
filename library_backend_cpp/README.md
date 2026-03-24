@@ -16,6 +16,7 @@
   - `init`
   - `list`
   - `search <query>`
+  - `lookup <query> [limit]` (поиск кандидатов в OpenLibrary, используется Rust GUI)
   - `sort <field> <asc|desc>`
   - `upsert <book_file> [--fetch-network]`
   - `remove <id>`
@@ -94,6 +95,7 @@ Rust GUI теперь напрямую управляет C++ backend:
 - выполняет `init` (создание схемы PostgreSQL);
 - показывает список (`list`);
 - ищет (`search`);
+- запрашивает кандидатов из OpenLibrary через backend (`lookup`);
 - добавляет книги (`upsert`);
 - удаляет книги (`remove`).
 
@@ -130,6 +132,25 @@ python library_app.py
 ```bash
 ./build/library_backend_console
 ```
+
+### Проверка в Windows PowerShell
+
+```powershell
+cd library_backend_cpp
+cmake -S . -B build
+cmake --build build --config Release
+$env:LIBRARY_PG_CONN = "host=localhost port=5432 dbname=library user=postgres password=123"
+.\build\library_backend_console.exe
+```
+
+В меню `library_backend_console` можно проверить все ключевые функции backend:
+- просмотр всех книг;
+- поиск;
+- сортировка;
+- добавление/обновление книги;
+- удаление по ID;
+- API-подгрузка;
+- вывод OBST.
 
 В меню доступны:
 - вывод всех книг;
