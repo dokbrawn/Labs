@@ -31,14 +31,6 @@ std::filesystem::path dataRootPath() {
     return std::filesystem::current_path();
 }
 
-std::filesystem::path markerDbPath() {
-    return dataRootPath() / "library.db";
-}
-
-std::filesystem::path markerBackupPath() {
-    return dataRootPath() / "library.db.backup";
-}
-
 std::filesystem::path logFilePath() {
     return dataRootPath() / "library.log";
 }
@@ -47,20 +39,6 @@ void ensureLocalArtifacts() {
     const auto root = dataRootPath();
     std::filesystem::create_directories(root);
     std::filesystem::create_directories(root / "images");
-
-    const auto dbPath = markerDbPath();
-    if (!std::filesystem::exists(dbPath)) {
-        std::ofstream out(dbPath, std::ios::app);
-        out << "# local marker file; main data is stored in PostgreSQL\n";
-    }
-
-    std::error_code ec;
-    std::filesystem::copy_file(
-        dbPath,
-        markerBackupPath(),
-        std::filesystem::copy_options::overwrite_existing,
-        ec
-    );
 }
 
 std::string trim(const std::string& value) {
