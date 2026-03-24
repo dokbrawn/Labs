@@ -498,15 +498,21 @@ bool LibraryStorage::upsertBook(Book& book) {
         return result;
     }();
     
+    const std::string year = std::to_string(book.year);
+    const std::string rating = std::to_string(book.rating);
+    const std::string price = std::to_string(book.price);
+    const std::string totalPrintRun = std::to_string(book.totalPrintRun);
+    const std::string searchFrequency = std::to_string(book.searchFrequency);
+
     const char* values[] = {
         id.c_str(), sid.c_str(), book.title.c_str(), book.author.c_str(), book.publisher.c_str(),
-        std::to_string(book.year).c_str(), book.format.c_str(), 
-        std::to_string(book.rating).c_str(), std::to_string(book.price).c_str(),
+        year.c_str(), book.format.c_str(),
+        rating.c_str(), price.c_str(),
         book.ageRating.c_str(), book.isbn.c_str(),
-        std::to_string(book.totalPrintRun).c_str(), book.signedToPrintDate.c_str(),
+        totalPrintRun.c_str(), book.signedToPrintDate.c_str(),
         additional.c_str(), book.coverImagePath.c_str(), book.licenseImagePath.c_str(),
         book.bibliographicReference.c_str(), book.coverUrl.c_str(),
-        std::to_string(book.searchFrequency).c_str()
+        searchFrequency.c_str()
     };
     
     appendLog("DEBUG", "Executing INSERT/UPDATE query");
@@ -623,10 +629,10 @@ std::optional<Book> NetworkMetadataClient::fetchByQuery(const Book& draft) const
     for (int attempt = 1; attempt <= 3; ++attempt) {
         // ИСПРАВЛЕНО: Правильная команда curl для Windows PowerShell
         // Используем двойные кавычки и правильный формат
-        const std::string command = "curl -sS --max-time 10 "
+        const std::string command = "curl -sS --max-time 5 "
             "-H \"User-Agent: LibraryBackendCPP/1.0\" "
             "\"" + url + "\" "
-            "-w \"`n__HTTP_CODE__:%{http_code}`n\"";
+            "-w \"\\n__HTTP_CODE__:%{http_code}\\n\"";
         
         appendLog("INFO", "Executing curl (attempt " + std::to_string(attempt) + ")");
         

@@ -40,17 +40,13 @@ target_include_directories(library_backend_console PRIVATE
 )
 
 # Подключение библиотек
-target_link_libraries(library_backend PRIVATE 
-    ${PostgreSQL_LIBRARIES}
-    ws2_32
-    wsock32
-)
+target_link_libraries(library_backend PRIVATE ${PostgreSQL_LIBRARIES})
+target_link_libraries(library_backend_console PRIVATE ${PostgreSQL_LIBRARIES})
 
-target_link_libraries(library_backend_console PRIVATE 
-    ${PostgreSQL_LIBRARIES}
-    ws2_32
-    wsock32
-)
+if(WIN32)
+    target_link_libraries(library_backend PRIVATE ws2_32 wsock32)
+    target_link_libraries(library_backend_console PRIVATE ws2_32 wsock32)
+endif()
 
 # Выходные директории
 set_target_properties(library_backend PROPERTIES
