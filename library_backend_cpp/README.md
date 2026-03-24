@@ -49,7 +49,6 @@
 ## Что уже считается БД и СУБД в проекте
 - **СУБД**: используется **PostgreSQL**.
 - **БД**: PostgreSQL-база, задаваемая строкой подключения `LIBRARY_PG_CONN`.
-- **library.db**: локальный marker-файл в `LIBRARY_DATA_PATH` (или в рабочей папке), чтобы соблюсти файловую структуру проекта рядом с `images/` и `library.log`.
 - **Обложки и файлы**: картинки для книг сохраняются в локальную папку `images/`, а путь к ним хранится в БД.
 
 ## Почему такие решения
@@ -79,7 +78,7 @@ cmake --build build
 ## Переменные окружения backend
 
 - `LIBRARY_PG_CONN` — строка подключения PostgreSQL (`host=... port=... dbname=... user=... password=...`).
-- `LIBRARY_DATA_PATH` — путь к папке с локальными файлами (`library.db`, `library.db.backup`, `library.log`, `images/`).
+- `LIBRARY_DATA_PATH` — путь к папке с локальными файлами (`library.log`, `images/`).
 - `LIBRARY_ENABLE_NET` — `false` полностью отключает API-запросы.
 - `OFFLINE_MODE` — `true` принудительно включает офлайн-режим (API не вызывается).
 

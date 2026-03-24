@@ -30,6 +30,28 @@ void printUsage() {
 bool fileExists(const std::string& path) {
     return std::filesystem::exists(path);
 }
+
+std::string resolveBookFilePath(const std::string& rawPath) {
+    std::filesystem::path path(rawPath);
+    if (std::filesystem::exists(path)) {
+        return path.string();
+    }
+
+    const auto cwd = std::filesystem::current_path();
+    const std::filesystem::path candidates[] = {
+        cwd / rawPath,
+        cwd.parent_path() / rawPath,
+        cwd.parent_path().parent_path() / rawPath
+    };
+
+    for (const auto& candidate : candidates) {
+        if (!candidate.empty() && std::filesystem::exists(candidate)) {
+            return candidate.string();
+        }
+    }
+
+    return {};
+}
 } // namespace
 
 int main(int argc, char* argv[]) {
@@ -80,11 +102,20 @@ int main(int argc, char* argv[]) {
     }
     
     if (command == "upsert") {
-        if (argc < 3 || !fileExists(argv[2])) {
+        if (argc < 3) {
             std::cerr << "error=missing_book_file\n";
             return 1;
         }
-        const auto book = parseBookFile(argv[2]);
+
+        const std::string bookFilePath = resolveBookFilePath(argv[2]);
+        if (bookFilePath.empty() || !fileExists(bookFilePath)) {
+            std::cerr << "error=missing_book_file\n";
+            std::cerr << "hint=book file was not found. cwd=" << std::filesystem::current_path().string()
+                      << ", requested=" << argv[2] << "\n";
+            return 1;
+        }
+
+        const auto book = parseBookFile(bookFilePath);
         if (!book.has_value()) {
             std::cerr << "error=invalid_book_file\n";
             return 1;
