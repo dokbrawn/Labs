@@ -23,6 +23,46 @@
 
 namespace {
 
+std::filesystem::path dataRootPath() {
+    const char* root = std::getenv("LIBRARY_DATA_PATH");
+    if (root != nullptr && std::string(root).size() > 0) {
+        return std::filesystem::path(root);
+    }
+    return std::filesystem::current_path();
+}
+
+std::filesystem::path markerDbPath() {
+    return dataRootPath() / "library.db";
+}
+
+std::filesystem::path markerBackupPath() {
+    return dataRootPath() / "library.db.backup";
+}
+
+std::filesystem::path logFilePath() {
+    return dataRootPath() / "library.log";
+}
+
+void ensureLocalArtifacts() {
+    const auto root = dataRootPath();
+    std::filesystem::create_directories(root);
+    std::filesystem::create_directories(root / "images");
+
+    const auto dbPath = markerDbPath();
+    if (!std::filesystem::exists(dbPath)) {
+        std::ofstream out(dbPath, std::ios::app);
+        out << "# local marker file; main data is stored in PostgreSQL\n";
+    }
+
+    std::error_code ec;
+    std::filesystem::copy_file(
+        dbPath,
+        markerBackupPath(),
+        std::filesystem::copy_options::overwrite_existing,
+        ec
+    );
+}
+
 std::string trim(const std::string& value) {
     const auto begin = value.find_first_not_of(" \t\r\n");
     if (begin == std::string::npos) return {};
@@ -32,8 +72,8 @@ std::string trim(const std::string& value) {
 
 void appendLog(const std::string& level, const std::string& message) {
     try {
-        std::filesystem::create_directories("logs");
-        std::ofstream out("logs/library.log", std::ios::app);
+        ensureLocalArtifacts();
+        std::ofstream out(logFilePath(), std::ios::app);
         if (!out) return;
         
         const auto now = std::chrono::system_clock::now();
@@ -706,6 +746,7 @@ LibraryBackendService::LibraryBackendService(LibraryStorage storage)
     : storage_(std::move(storage)) {}
 
 bool LibraryBackendService::initialize() {
+    ensureLocalArtifacts();
     appendLog("INFO", "=== Starting initialization ===");
     
     if (!storage_.open()) {
