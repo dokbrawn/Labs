@@ -2,12 +2,19 @@
 
 #include <filesystem>
 #include <fstream>
+#include <cstdlib>
 #include <iostream>
 #include <string>
 #include <vector>
 
 namespace {
-constexpr const char* kDefaultDbPath = "data/library.db";
+std::string defaultDbPath() {
+    const char* customRoot = std::getenv("LIBRARY_DATA_PATH");
+    if (customRoot != nullptr && std::string(customRoot).size() > 0) {
+        return (std::filesystem::path(customRoot) / "library.db").string();
+    }
+    return "data/library.db";
+}
 
 void printUsage() {
     std::cout
@@ -27,7 +34,7 @@ bool fileExists(const std::string& path) {
 } // namespace
 
 int main(int argc, char* argv[]) {
-    LibraryStorage storage(kDefaultDbPath);
+    LibraryStorage storage(defaultDbPath());
     LibraryBackendService service(std::move(storage));
     if (!service.initialize()) {
         std::cerr << "error=failed_to_initialize\n";

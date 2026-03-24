@@ -3,17 +3,21 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iomanip>
 #include <limits>
 #include <map>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
+#include <thread>
 #include <utility>
 
 #include <sqlite3.h>
@@ -150,6 +154,120 @@ std::string readCommandOutput(const std::string& command) {
         return {};
     }
     return result;
+}
+
+std::string currentTimestamp() {
+    const auto now = std::chrono::system_clock::now();
+    const std::time_t t = std::chrono::system_clock::to_time_t(now);
+    std::tm tm{};
+#ifdef _WIN32
+    localtime_s(&tm, &t);
+#else
+    localtime_r(&t, &tm);
+#endif
+    std::ostringstream out;
+    out << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
+    return out.str();
+}
+
+std::filesystem::path logPathFromDb(const std::string& dbPath) {
+    const auto p = std::filesystem::path(dbPath);
+    if (p.has_parent_path()) {
+        return p.parent_path() / "library.log";
+    }
+    return std::filesystem::path("library.log");
+}
+
+void appendLog(const std::string& level, const std::string& message, const std::string& dbPath) {
+    const auto path = logPathFromDb(dbPath);
+    if (path.has_parent_path()) {
+        std::filesystem::create_directories(path.parent_path());
+    }
+    std::ofstream out(path, std::ios::app);
+    if (!out.good()) {
+        return;
+    }
+    out << currentTimestamp() << " [" << level << "] " << message << "\n";
+}
+
+std::optional<std::chrono::system_clock::time_point> parseLogTimestamp(const std::string& line) {
+    if (line.size() < 19) {
+        return std::nullopt;
+    }
+    std::tm tm{};
+    std::istringstream in(line.substr(0, 19));
+    in >> std::get_time(&tm, "%Y-%m-%d %H:%M:%S");
+    if (in.fail()) {
+        return std::nullopt;
+    }
+    const std::time_t t = std::mktime(&tm);
+    if (t < 0) {
+        return std::nullopt;
+    }
+    return std::chrono::system_clock::from_time_t(t);
+}
+
+void pruneOldLogs(const std::string& dbPath) {
+    const auto path = logPathFromDb(dbPath);
+    if (!std::filesystem::exists(path)) {
+        return;
+    }
+    std::ifstream in(path);
+    if (!in.good()) {
+        return;
+    }
+    const auto threshold = std::chrono::system_clock::now() - std::chrono::hours(24 * 30);
+    std::vector<std::string> kept;
+    std::string line;
+    while (std::getline(in, line)) {
+        const auto ts = parseLogTimestamp(line);
+        if (!ts.has_value() || ts.value() >= threshold) {
+            kept.push_back(line);
+        }
+    }
+    in.close();
+    std::ofstream out(path, std::ios::trunc);
+    for (const auto& item : kept) {
+        out << item << "\n";
+    }
+}
+
+void ensureWeeklyBackup(const std::string& dbPath) {
+    const auto db = std::filesystem::path(dbPath);
+    if (!std::filesystem::exists(db)) {
+        return;
+    }
+    const auto backup = db.parent_path() / "library.db.backup";
+    if (!std::filesystem::exists(backup)) {
+        std::filesystem::copy_file(db, backup, std::filesystem::copy_options::overwrite_existing);
+        return;
+    }
+    const auto dbWrite = std::filesystem::last_write_time(db);
+    const auto backupWrite = std::filesystem::last_write_time(backup);
+    if (dbWrite > backupWrite + std::chrono::hours(24 * 7)) {
+        std::filesystem::copy_file(db, backup, std::filesystem::copy_options::overwrite_existing);
+    }
+}
+
+bool envFlagEnabled(const char* name, bool defaultValue) {
+    const char* value = std::getenv(name);
+    if (value == nullptr) {
+        return defaultValue;
+    }
+    const std::string normalized = normalizeFieldName(value);
+    if (normalized == "0" || normalized == "false" || normalized == "off" || normalized == "no") {
+        return false;
+    }
+    if (normalized == "1" || normalized == "true" || normalized == "on" || normalized == "yes") {
+        return true;
+    }
+    return defaultValue;
+}
+
+bool isNetworkEnabled() {
+    const bool offlineMode = envFlagEnabled("OFFLINE_MODE", false);
+    const bool networkSwitch = envFlagEnabled("LIBRARY_ENABLE_NET", true);
+    return !offlineMode && networkSwitch;
 }
 
 std::string shellEscape(const std::string& value) {
@@ -305,21 +423,69 @@ bool LibraryStorage::open() {
     if (path.has_parent_path()) {
         std::filesystem::create_directories(path.parent_path());
     }
+    pruneOldLogs(filePath_);
+    ensureWeeklyBackup(filePath_);
 
     sqlite3* db = nullptr;
     if (sqlite3_open(filePath_.c_str(), &db) != SQLITE_OK) {
         if (db != nullptr) {
             sqlite3_close(db);
         }
+        appendLog("ERROR", "DB open failed: " + filePath_, filePath_);
         return false;
     }
 
     db_ = db;
-    return execute("PRAGMA foreign_keys = ON;") && ensureSchema();
+    if (!execute("PRAGMA foreign_keys = ON;")) {
+        appendLog("ERROR", "Failed to enable foreign_keys pragma", filePath_);
+        return false;
+    }
+
+    sqlite3_stmt* raw = nullptr;
+    if (sqlite3_prepare_v2(static_cast<sqlite3*>(db_), "PRAGMA integrity_check;", -1, &raw, nullptr) == SQLITE_OK) {
+        StatementPtr stmt(raw);
+        bool integrityOk = false;
+        if (sqlite3_step(stmt.get()) == SQLITE_ROW) {
+            const char* txt = reinterpret_cast<const char*>(sqlite3_column_text(stmt.get(), 0));
+            integrityOk = txt != nullptr && std::string(txt) == "ok";
+        }
+        if (!integrityOk) {
+            appendLog("ERROR", "DB integrity check failed; rotating broken DB to .bak", filePath_);
+            sqlite3_close(static_cast<sqlite3*>(db_));
+            db_ = nullptr;
+            const auto broken = std::filesystem::path(filePath_);
+            const auto backup = broken.parent_path() / "library.db.bak";
+            std::error_code ec;
+            std::filesystem::rename(broken, backup, ec);
+            if (ec) {
+                appendLog("ERROR", "Failed to rename broken DB: " + ec.message(), filePath_);
+                return false;
+            }
+            sqlite3* recreated = nullptr;
+            if (sqlite3_open(filePath_.c_str(), &recreated) != SQLITE_OK) {
+                if (recreated != nullptr) {
+                    sqlite3_close(recreated);
+                }
+                appendLog("ERROR", "Failed to recreate DB after corruption recovery", filePath_);
+                return false;
+            }
+            db_ = recreated;
+            if (!execute("PRAGMA foreign_keys = ON;")) {
+                return false;
+            }
+        }
+    }
+
+    if (!ensureSchema()) {
+        appendLog("ERROR", "ensureSchema failed", filePath_);
+        return false;
+    }
+    appendLog("INFO", "Storage opened successfully", filePath_);
+    return true;
 }
 
 bool LibraryStorage::ensureSchema() {
-    return execute(R"SQL(
+    if (!execute(R"SQL(
         CREATE TABLE IF NOT EXISTS genres (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL UNIQUE
@@ -344,7 +510,7 @@ bool LibraryStorage::ensureSchema() {
             format TEXT,
             rating REAL NOT NULL DEFAULT 0,
             price REAL NOT NULL DEFAULT 0,
-            age_rating TEXT,
+            age_rating TEXT CHECK(age_rating IN ('0+','6+','12+','16+','18+') OR age_rating = ''),
             isbn TEXT,
             total_print_run INTEGER NOT NULL DEFAULT 0,
             signed_to_print_date TEXT,
@@ -354,15 +520,21 @@ bool LibraryStorage::ensureSchema() {
             bibliographic_reference TEXT,
             cover_url TEXT,
             search_frequency REAL NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
             FOREIGN KEY (genre_id) REFERENCES genres(id) ON DELETE SET NULL,
             FOREIGN KEY (subgenre_id) REFERENCES subgenres(id) ON DELETE SET NULL
         );
 
         CREATE INDEX IF NOT EXISTS idx_books_title ON books(title);
         CREATE INDEX IF NOT EXISTS idx_books_author ON books(author);
-        CREATE INDEX IF NOT EXISTS idx_books_isbn ON books(isbn);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_books_isbn_unique ON books(isbn) WHERE isbn IS NOT NULL AND isbn <> '';
         CREATE INDEX IF NOT EXISTS idx_subgenres_genre_id ON subgenres(genre_id);
-    )SQL");
+    )SQL")) {
+        return false;
+    }
+
+    execute("ALTER TABLE books ADD COLUMN created_at TEXT NOT NULL DEFAULT (datetime('now'));");
+    return true;
 }
 
 bool LibraryStorage::execute(const std::string& sql) const {
@@ -615,6 +787,17 @@ bool LibraryStorage::isEmpty() const {
 }
 
 std::optional<Book> NetworkMetadataClient::fetchByQuery(const Book& draft) const {
+    if (!isNetworkEnabled()) {
+        appendLog("WARNING", "Network disabled by OFFLINE_MODE/LIBRARY_ENABLE_NET. API enrichment skipped.", "data/library.db");
+        return std::nullopt;
+    }
+    StatementPtr stmt(raw);
+    while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
+        books.push_back(readBookFromStatement(stmt.get()));
+    }
+    return books;
+}
+
     std::string query = draft.isbn;
     if (query.empty()) {
         query = draft.title;
@@ -630,11 +813,68 @@ std::optional<Book> NetworkMetadataClient::fetchByQuery(const Book& draft) const
     std::string encoded = query;
     std::replace(encoded.begin(), encoded.end(), ' ', '+');
     const std::string url = "https://openlibrary.org/search.json?q=" + encoded + "&limit=1&fields=title,author_name,first_publish_year,isbn,publisher,cover_i";
-    const std::string command = "curl -fsSL --max-time 10 -H 'User-Agent: LibraryBackendCPP/1.0' " + shellEscape(url);
-    const std::string response = readCommandOutput(command);
-    if (response.empty()) {
+    std::string response;
+    int httpCode = 0;
+    for (int attempt = 1; attempt <= 3; ++attempt) {
+        const std::string command =
+            "curl -sS --max-time 5 -H 'User-Agent: LibraryBackendCPP/1.0' " + shellEscape(url) +
+            " -w '\\n__HTTP_CODE__:%{http_code}\\n'";
+        const std::string raw = readCommandOutput(command);
+        if (raw.empty()) {
+            appendLog("WARNING", "API timeout/empty response, attempt " + std::to_string(attempt), "data/library.db");
+            if (attempt < 3) {
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+            }
+            continue;
+        }
+
+        const std::string marker = "__HTTP_CODE__:";
+        const auto markerPos = raw.rfind(marker);
+        if (markerPos != std::string::npos) {
+            response = raw.substr(0, markerPos);
+            const auto codePart = trim(raw.substr(markerPos + marker.size()));
+            try {
+                httpCode = std::stoi(codePart);
+            } catch (...) {
+                httpCode = 0;
+            }
+        } else {
+            response = raw;
+            httpCode = 0;
+        }
+
+        if (httpCode == 200) {
+            break;
+        }
+        if (httpCode == 404) {
+            appendLog("INFO", "OpenLibrary returned 404 for query: " + query, "data/library.db");
+            return std::nullopt;
+        }
+        if (httpCode == 429) {
+            appendLog("WARNING", "OpenLibrary rate limited (429), attempt " + std::to_string(attempt), "data/library.db");
+            if (attempt < 3) {
+                std::this_thread::sleep_for(std::chrono::seconds(2));
+            }
+            continue;
+        }
+        if (httpCode >= 500 || httpCode == 0) {
+            appendLog("WARNING", "OpenLibrary server/network error code=" + std::to_string(httpCode) + ", attempt " + std::to_string(attempt), "data/library.db");
+            if (attempt < 3) {
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+            }
+            continue;
+        }
+        if (httpCode >= 400) {
+            appendLog("WARNING", "OpenLibrary bad request code=" + std::to_string(httpCode), "data/library.db");
+            return std::nullopt;
+        }
+    }
+
+    if (response.empty() || httpCode != 200) {
+        appendLog("WARNING", "API enrichment fallback used for query: " + query, "data/library.db");
         return std::nullopt;
     }
+    StatementPtr stmt(raw);
 
     Book remote;
     remote.title = jsonStringField(response, "title");
@@ -730,7 +970,7 @@ bool LibraryBackendService::initialize() {
 }
 
 bool LibraryBackendService::addOrUpdateBook(Book& book, bool fetchFromNetwork) {
-    if (fetchFromNetwork) {
+    if (fetchFromNetwork && isNetworkEnabled()) {
         const auto remote = networkClient_.fetchByQuery(book);
         if (remote.has_value()) {
             if (book.title.empty()) {
@@ -752,17 +992,59 @@ bool LibraryBackendService::addOrUpdateBook(Book& book, bool fetchFromNetwork) {
                 book.coverUrl = remote->coverUrl;
             }
         }
+    } else if (fetchFromNetwork && !isNetworkEnabled()) {
+        appendLog("WARNING", "Offline mode enabled; book saved without API enrichment", "data/library.db");
+    }
+    query = trim(query);
+    if (query.empty()) {
+        return std::nullopt;
     }
 
     if (trim(book.title).empty() || trim(book.author).empty()) {
         return false;
     }
 
-    return storage_.upsertBook(book);
+    const bool ok = storage_.upsertBook(book);
+    if (ok) {
+        appendLog("INFO", "Book upserted id=" + std::to_string(book.id) + " title=" + book.title, "data/library.db");
+    } else {
+        appendLog("ERROR", "Book upsert failed title=" + book.title, "data/library.db");
+    }
+    return ok;
 }
 
 bool LibraryBackendService::removeBookById(int id) {
-    return storage_.removeBookById(id);
+    std::string coverPath;
+    std::string licensePath;
+    for (const auto& book : storage_.allBooks()) {
+        if (book.id == id) {
+            coverPath = book.coverImagePath;
+            licensePath = book.licenseImagePath;
+            break;
+        }
+    }
+    return true;
+}
+
+    if (!storage_.removeBookById(id)) {
+        return false;
+    }
+
+    auto removeFileIfExists = [&](const std::string& pathValue) {
+        if (trim(pathValue).empty()) {
+            return;
+        }
+        std::error_code ec;
+        std::filesystem::remove(pathValue, ec);
+        if (ec) {
+            appendLog("WARNING", "Failed to remove file on book delete: " + pathValue + " (" + ec.message() + ")", "data/library.db");
+        }
+    };
+
+    removeFileIfExists(coverPath);
+    removeFileIfExists(licensePath);
+    appendLog("INFO", "Book removed id=" + std::to_string(id), "data/library.db");
+    return true;
 }
 
 std::vector<Book> LibraryBackendService::searchBooks(const std::string& query) const {

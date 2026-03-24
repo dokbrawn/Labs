@@ -10,6 +10,9 @@
 - хранит данные в файле `data/library.db`;
 - создает структуру `genres -> subgenres -> books` через SQLite;
 - при первом `init` автоматически заполняет пустую БД демонстрационным набором книг;
+- поддерживает офлайн-режим и сетевые флаги через переменные окружения (`OFFLINE_MODE`, `LIBRARY_ENABLE_NET`);
+- пишет события в `library.log` рядом с БД, с fallback-поведением при сетевых ошибках API;
+- создает `library.db.backup` (еженедельный бэкап) и восстанавливается при повреждении БД через `library.db.bak`;
 - поддерживает команды:
   - `init`
   - `list`
@@ -65,9 +68,19 @@ cmake -S . -B build
 cmake --build build
 ```
 
+После сборки создаются 2 исполняемых файла:
+- `library_backend` — CLI c командами (`list/search/sort/upsert/remove/...`);
+- `library_backend_console` — интерактивное меню для работы с backend в консоли (в т.ч. PowerShell).
+
 ### Windows
 - для multi-config генераторов Visual Studio backend теперь кладется прямо в `build/`, а не только в `build/Debug`;
 - после сборки CMake пытается безопасно скопировать рядом с `library_backend.exe` нужные runtime DLL, включая SQLite, если они реально есть в списке зависимостей текущей сборки.
+
+## Переменные окружения backend
+
+- `LIBRARY_DATA_PATH` — путь к папке, где будут храниться `library.db`, `library.log`, `library.db.backup`.
+- `LIBRARY_ENABLE_NET` — `false` полностью отключает API-запросы.
+- `OFFLINE_MODE` — `true` принудительно включает офлайн-режим (API не вызывается).
 
 ## Запуск GUI
 
@@ -84,3 +97,18 @@ python library_app.py
 ./build/library_backend sort price desc
 ./build/library_backend search "Clean Code"
 ```
+
+## Интерактивный backend-режим (консоль/PowerShell)
+
+```bash
+./build/library_backend_console
+```
+
+В меню доступны:
+- вывод всех книг;
+- поиск;
+- сортировка;
+- добавление и обновление книги;
+- удаление по `id`;
+- подгрузка книги из OpenLibrary API;
+- вывод OBST.
