@@ -4,6 +4,8 @@
 #include <vector>
 #include <cstring>
 #include <iomanip>
+#include <clocale>
+#include <windows.h>
 
 // Структура записи о сетевом адаптере
 struct Adapter {
@@ -177,7 +179,10 @@ void saveToFile(const std::vector<Adapter>& adapters, const std::string& filenam
 }
 
 int main() {
-    setlocale(LC_ALL, "Russian");
+    // Устанавливаем кодировку для корректного отображения русского текста в Windows
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
+    setlocale(LC_ALL, "ru_RU.UTF-8");
     
     showDeveloperInfo();
     
