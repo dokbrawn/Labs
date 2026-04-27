@@ -23,7 +23,7 @@ std::string get_system_info() {
     if (uname(&un) == 0) {
         return std::string(un.sysname) + " " + un.release + " (" + un.machine + ")";
     }
-    return "Unknown system";
+    return "Неизвестная система";
 }
 
 bool test_correctness(std::ofstream& log) {
@@ -40,26 +40,26 @@ bool test_correctness(std::ofstream& log) {
         int64_t neon_unrolled_result = process_array_neon_unrolled(data.data(), n);
         
         if (scalar_result != neon_result || scalar_result != neon_unrolled_result) {
-            log << "FAIL: Mismatch at size " << n << ": scalar=" << scalar_result 
+            log << "ОШИБКА: Несовпадение при размере " << n << ": скаляр=" << scalar_result 
                 << ", neon=" << neon_result 
-                << ", unrolled=" << neon_unrolled_result << std::endl;
-            std::cerr << "Mismatch at size " << n << ": scalar=" << scalar_result 
+                << ", развернутый=" << neon_unrolled_result << std::endl;
+            std::cerr << "ОШИБКА: Несовпадение при размере " << n << ": скаляр=" << scalar_result 
                       << ", neon=" << neon_result 
-                      << ", unrolled=" << neon_unrolled_result << std::endl;
+                      << ", развернутый=" << neon_unrolled_result << std::endl;
             return false;
         }
-        log << "PASS: Size " << n << " -> " << scalar_result << std::endl;
+        log << "УСПЕХ: Размер " << n << " -> " << scalar_result << std::endl;
     }
     
     std::vector<int32_t> mixed = {-100, 0, 50, -25, 0, 75, -1, 1};
     int64_t expected = 100 + 0 + 50 + 25 + 0 + 75 + 1 + 1;
     int64_t result = process_array_neon(mixed.data(), mixed.size());
     if (result != expected) {
-        log << "FAIL: Mixed test: expected=" << expected << ", got=" << result << std::endl;
-        std::cerr << "Mixed test failed: expected=" << expected << ", got=" << result << std::endl;
+        log << "ОШИБКА: Смешанный тест: ожидалось=" << expected << ", получено=" << result << std::endl;
+        std::cerr << "Смешанный тест не пройден: ожидалось=" << expected << ", получено=" << result << std::endl;
         return false;
     }
-    log << "PASS: Mixed test -> " << result << std::endl;
+    log << "УСПЕХ: Смешанный тест -> " << result << std::endl;
     
     return true;
 }
@@ -70,8 +70,8 @@ bool test_null_pointer(std::ofstream& log) {
         process_array_neon(nullptr, 0);
         process_array_neon_unrolled(nullptr, 0);
     } catch (...) {
-        log << "FAIL: Null pointer with size 0 should not throw" << std::endl;
-        std::cerr << "Null pointer with size 0 should not throw" << std::endl;
+        log << "ОШИБКА: Нулевой указатель с размером 0 не должен вызывать исключение" << std::endl;
+        std::cerr << "Нулевой указатель с размером 0 не должен вызывать исключение" << std::endl;
         return false;
     }
     
@@ -98,29 +98,29 @@ bool test_null_pointer(std::ofstream& log) {
     }
     
     if (!caught_scalar || !caught_neon || !caught_unrolled) {
-        log << "FAIL: Null pointer with non-zero size should throw" << std::endl;
-        std::cerr << "Null pointer with non-zero size should throw" << std::endl;
+        log << "ОШИБКА: Нулевой указатель с ненулевым размером должен вызывать исключение" << std::endl;
+        std::cerr << "Нулевой указатель с ненулевым размером должен вызывать исключение" << std::endl;
         return false;
     }
     
-    log << "PASS: Null pointer handling" << std::endl;
+    log << "УСПЕХ: Обработка нулевого указателя" << std::endl;
     return true;
 }
 
 void run_benchmark(std::ofstream& log) {
     const size_t sizes[] = {1000, 10000, 100000, 1000000};
     
-    log << std::left << std::setw(12) << "Size" 
-              << std::setw(15) << "Scalar (ms)" 
-              << std::setw(15) << "NEON (ms)" 
-              << std::setw(15) << "Unrolled (ms)" 
-              << std::setw(12) << "Speedup" << std::endl;
+    log << std::left << std::setw(12) << "Размер" 
+              << std::setw(15) << "Скаляр (мс)" 
+              << std::setw(15) << "NEON (мс)" 
+              << std::setw(15) << "Развернутый (мс)" 
+              << std::setw(12) << "Ускорение" << std::endl;
     
-    std::cout << std::left << std::setw(12) << "Size" 
-              << std::setw(15) << "Scalar (ms)" 
-              << std::setw(15) << "NEON (ms)" 
-              << std::setw(15) << "Unrolled (ms)" 
-              << std::setw(12) << "Speedup" << std::endl;
+    std::cout << std::left << std::setw(12) << "Размер" 
+              << std::setw(15) << "Скаляр (мс)" 
+              << std::setw(15) << "NEON (мс)" 
+              << std::setw(15) << "Развернутый (мс)" 
+              << std::setw(12) << "Ускорение" << std::endl;
     
     for (size_t n : sizes) {
         std::vector<int32_t> data(n);
@@ -172,49 +172,49 @@ int main() {
     std::ofstream log_file(log_filename);
     
     if (!log_file.is_open()) {
-        std::cerr << "Failed to open log file: " << log_filename << std::endl;
+        std::cerr << "Не удалось открыть файл лога: " << log_filename << std::endl;
         return 1;
     }
     
-    log_file << "ARM NEON Array Processor Benchmark Log" << std::endl;
-    log_file << "=======================================" << std::endl;
-    log_file << "Timestamp: " << get_timestamp() << std::endl;
-    log_file << "System: " << get_system_info() << std::endl;
+    log_file << "Журнал тестирования ARM NEON Array Processor" << std::endl;
+    log_file << "============================================" << std::endl;
+    log_file << "Время: " << get_timestamp() << std::endl;
+    log_file << "Система: " << get_system_info() << std::endl;
     log_file << std::endl;
     
-    std::cout << "ARM NEON Array Processor Tests" << std::endl;
-    std::cout << "==============================" << std::endl;
-    std::cout << "Log file: " << log_filename << std::endl;
+    std::cout << "Тестирование ARM NEON Array Processor" << std::endl;
+    std::cout << "======================================" << std::endl;
+    std::cout << "Файл лога: " << log_filename << std::endl;
     
-    log_file << "=== Correctness Tests ===" << std::endl;
-    std::cout << "\nRunning correctness tests..." << std::endl;
+    log_file << "=== Тесты корректности ===" << std::endl;
+    std::cout << "\nЗапуск тестов корректности..." << std::endl;
     if (!test_correctness(log_file)) {
-        log_file << "RESULT: FAILED" << std::endl;
-        std::cerr << "Correctness tests FAILED" << std::endl;
+        log_file << "РЕЗУЛЬТАТ: НЕ УДАЛОСЬ" << std::endl;
+        std::cerr << "Тесты корректности НЕ ПРОЙДЕНЫ" << std::endl;
         return 1;
     }
-    log_file << "RESULT: PASSED" << std::endl << std::endl;
-    std::cout << "Correctness tests PASSED" << std::endl;
+    log_file << "РЕЗУЛЬТАТ: УСПЕШНО" << std::endl << std::endl;
+    std::cout << "Тесты корректности ПРОЙДЕНЫ" << std::endl;
     
-    log_file << "=== Null Pointer Tests ===" << std::endl;
-    std::cout << "\nRunning null pointer tests..." << std::endl;
+    log_file << "=== Тесты нулевого указателя ===" << std::endl;
+    std::cout << "\nЗапуск тестов обработки нулевого указателя..." << std::endl;
     if (!test_null_pointer(log_file)) {
-        log_file << "RESULT: FAILED" << std::endl;
-        std::cerr << "Null pointer tests FAILED" << std::endl;
+        log_file << "РЕЗУЛЬТАТ: НЕ УДАЛОСЬ" << std::endl;
+        std::cerr << "Тесты нулевого указателя НЕ ПРОЙДЕНЫ" << std::endl;
         return 1;
     }
-    log_file << "RESULT: PASSED" << std::endl << std::endl;
-    std::cout << "Null pointer tests PASSED" << std::endl;
+    log_file << "РЕЗУЛЬТАТ: УСПЕШНО" << std::endl << std::endl;
+    std::cout << "Тесты нулевого указателя ПРОЙДЕНЫ" << std::endl;
     
-    log_file << "=== Benchmark Results ===" << std::endl;
-    std::cout << "\nRunning benchmark..." << std::endl;
+    log_file << "=== Результаты бенчмарка ===" << std::endl;
+    std::cout << "\nЗапуск бенчмарка..." << std::endl;
     run_benchmark(log_file);
     
-    log_file << std::endl << "=== Summary ===" << std::endl;
-    log_file << "All tests completed successfully!" << std::endl;
+    log_file << std::endl << "=== Итоги ===" << std::endl;
+    log_file << "Все тесты успешно завершены!" << std::endl;
     
-    std::cout << "\nAll tests completed successfully!" << std::endl;
-    std::cout << "Results saved to: " << log_filename << std::endl;
+    std::cout << "\nВсе тесты успешно завершены!" << std::endl;
+    std::cout << "Результаты сохранены в: " << log_filename << std::endl;
     
     log_file.close();
     

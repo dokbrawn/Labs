@@ -4,15 +4,4 @@
 *.obj
 *.out
 test_neon
-
-# Dependencies
-build/
-
-# Logs and temp files
-*.log
-*.tmp
-
-# Editors
-.vscode/
-.idea/
 ```
