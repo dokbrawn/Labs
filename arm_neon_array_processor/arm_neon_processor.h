@@ -11,7 +11,7 @@
 
 int64_t process_array_scalar(const int32_t* data, size_t n) {
     if (data == nullptr && n > 0) {
-        throw std::invalid_argument("Null pointer with non-zero size");
+        throw std::invalid_argument("Нулевой указатель с ненулевым размером");
     }
     
     int64_t sum = 0;
@@ -30,7 +30,7 @@ int64_t process_array_scalar(const int32_t* data, size_t n) {
 
 int64_t process_array_neon(const int32_t* data, size_t n) {
     if (data == nullptr && n > 0) {
-        throw std::invalid_argument("Null pointer with non-zero size");
+        throw std::invalid_argument("Нулевой указатель с ненулевым размером");
     }
     
     if (n == 0) {
@@ -76,7 +76,7 @@ int64_t process_array_neon(const int32_t* data, size_t n) {
 
 int64_t process_array_neon_unrolled(const int32_t* data, size_t n) {
     if (data == nullptr && n > 0) {
-        throw std::invalid_argument("Null pointer with non-zero size");
+        throw std::invalid_argument("Нулевой указатель с ненулевым размером");
     }
     
     if (n == 0) {
